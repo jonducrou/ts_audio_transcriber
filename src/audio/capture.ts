@@ -5,8 +5,22 @@ import { ScreenCaptureAudioStream } from './stream';
 // Import audio recording library
 const recorder = require('node-record-lpcm16');
 
-// Import the screencapturekit module
-const screencapturekit = require('screencapturekit');
+// Lazy-load screencapturekit only when needed
+// This allows microphone-only usage without requiring screencapturekit
+let screencapturekitModule: any = null;
+
+async function getScreenCaptureKit(): Promise<any> {
+  if (!screencapturekitModule) {
+    try {
+      screencapturekitModule = require('screencapturekit');
+      console.log('[AudioCapture] ScreenCaptureKit loaded successfully');
+    } catch (error) {
+      console.warn('[AudioCapture] Failed to load ScreenCaptureKit:', error);
+      throw new Error('ScreenCaptureKit is not available. System audio capture requires screencapturekit package.');
+    }
+  }
+  return screencapturekitModule;
+}
 
 /**
  * ScreenCaptureKit-based audio capture implementation for macOS
@@ -15,6 +29,7 @@ export class MacAudioCapture implements AudioCapture {
   private _permissionsRequested = false;
   private _activeStreams: Map<string, ScreenCaptureAudioStream> = new Map();
   private _isInitialized = false;
+  private _screenCaptureKitLoaded = false;
 
   constructor() {
     // Initialize any required state
@@ -22,6 +37,7 @@ export class MacAudioCapture implements AudioCapture {
 
   /**
    * Initialize the audio capture system
+   * For microphone-only mode, this will succeed without ScreenCaptureKit
    */
   async initialize(): Promise<void> {
     if (this._isInitialized) {
@@ -29,14 +45,14 @@ export class MacAudioCapture implements AudioCapture {
     }
 
     try {
-      // Test ScreenCaptureKit availability
-      await this.testScreenCaptureKit();
+      // ScreenCaptureKit is optional for microphone-only mode
+      // It will be lazy-loaded only when system audio capture is requested
       this._isInitialized = true;
       console.log('MacAudioCapture initialized successfully');
     } catch (error) {
       throw new TranscriptionError(
         TranscriptionErrorType.AUDIO_CAPTURE_FAILED,
-        'Failed to initialize ScreenCaptureKit',
+        'Failed to initialize audio capture',
         error as Error
       );
     }
@@ -46,48 +62,55 @@ export class MacAudioCapture implements AudioCapture {
     try {
       const devices: AudioDevice[] = [];
 
-      // Get microphone devices
+      // Try to get devices using ScreenCaptureKit if available
       try {
-        const micDevices = await screencapturekit.microphoneDevices();
-        if (Array.isArray(micDevices)) {
-          micDevices.forEach((device: any, index: number) => {
-            devices.push({
-              id: device.id || `mic-${index}`,
-              name: device.name || `Microphone ${index + 1}`,
-              type: 'input',
-              isDefault: device.isDefault || index === 0,
-              metadata: {
-                ...device,
-                captureType: 'microphone',
-                supported: true
-              }
-            });
-          });
-        }
-      } catch (error) {
-        console.warn('Failed to enumerate microphone devices:', error);
-      }
+        const sck = await getScreenCaptureKit();
 
-      // Get system audio devices
-      try {
-        const audioDevices = await screencapturekit.audioDevices();
-        if (Array.isArray(audioDevices)) {
-          audioDevices.forEach((device: any, index: number) => {
-            devices.push({
-              id: device.id || `system-audio-${index}`,
-              name: device.name || `System Audio ${index + 1}`,
-              type: 'output',
-              isDefault: device.isDefault || index === 0,
-              metadata: {
-                ...device,
-                captureType: 'system-audio',
-                supported: true
-              }
+        // Get microphone devices
+        try {
+          const micDevices = await sck.microphoneDevices();
+          if (Array.isArray(micDevices)) {
+            micDevices.forEach((device: any, index: number) => {
+              devices.push({
+                id: device.id || `mic-${index}`,
+                name: device.name || `Microphone ${index + 1}`,
+                type: 'input',
+                isDefault: device.isDefault || index === 0,
+                metadata: {
+                  ...device,
+                  captureType: 'microphone',
+                  supported: true
+                }
+              });
             });
-          });
+          }
+        } catch (error) {
+          console.warn('Failed to enumerate microphone devices:', error);
+        }
+
+        // Get system audio devices
+        try {
+          const audioDevices = await sck.audioDevices();
+          if (Array.isArray(audioDevices)) {
+            audioDevices.forEach((device: any, index: number) => {
+              devices.push({
+                id: device.id || `system-audio-${index}`,
+                name: device.name || `System Audio ${index + 1}`,
+                type: 'output',
+                isDefault: device.isDefault || index === 0,
+                metadata: {
+                  ...device,
+                  captureType: 'system-audio',
+                  supported: true
+                }
+              });
+            });
+          }
+        } catch (error) {
+          console.warn('Failed to enumerate system audio devices:', error);
         }
       } catch (error) {
-        console.warn('Failed to enumerate system audio devices:', error);
+        console.warn('ScreenCaptureKit not available for device enumeration:', error);
       }
 
       // If no devices found, add default entries
@@ -198,6 +221,20 @@ export class MacAudioCapture implements AudioCapture {
         await this.initialize();
       }
 
+      // Lazy-load ScreenCaptureKit for system audio (required)
+      if (!this._screenCaptureKitLoaded) {
+        try {
+          await getScreenCaptureKit();
+          this._screenCaptureKitLoaded = true;
+        } catch (error) {
+          throw new TranscriptionError(
+            TranscriptionErrorType.AUDIO_CAPTURE_FAILED,
+            'System audio capture requires ScreenCaptureKit which is not available',
+            error as Error
+          );
+        }
+      }
+
       // Check support
       const supportsCapture = await this.supportsSystemAudioCapture();
       if (!supportsCapture) {
@@ -266,10 +303,8 @@ export class MacAudioCapture implements AudioCapture {
 
   async supportsMicrophoneCapture(): Promise<boolean> {
     try {
-      if (typeof screencapturekit.supportsMicrophoneCapture === 'function') {
-        return await screencapturekit.supportsMicrophoneCapture();
-      }
-      // Assume support if method doesn't exist (macOS 15+ typically supports this)
+      // For microphone-only mode (using sox), we don't need ScreenCaptureKit
+      // Sox works on any macOS system
       return process.platform === 'darwin';
     } catch (error) {
       console.warn('Could not check microphone capture support:', error);
@@ -307,20 +342,6 @@ export class MacAudioCapture implements AudioCapture {
     await Promise.all(stopPromises);
     this._activeStreams.clear();
     console.log('All audio streams stopped');
-  }
-
-  /**
-   * Test ScreenCaptureKit availability
-   */
-  private async testScreenCaptureKit(): Promise<void> {
-    try {
-      // Try to call a basic ScreenCaptureKit function
-      if (typeof screencapturekit.getDisplays === 'function') {
-        await screencapturekit.getDisplays();
-      }
-    } catch (error) {
-      throw new Error(`ScreenCaptureKit is not available: ${error}`);
-    }
   }
 
   /**

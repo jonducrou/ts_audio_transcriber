@@ -1,6 +1,6 @@
 {
   "name": "ts-audio-transcriber",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "TypeScript library for real-time audio transcription on macOS with microphone and system audio support using open source speech recognition",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -44,9 +44,11 @@
   },
   "dependencies": {
     "node-record-lpcm16": "^1.0.1",
-    "screencapturekit": "^1.0.22",
     "vosk-koffi": "^1.1.1",
     "whisper-node": "^1.1.1"
+  },
+  "optionalDependencies": {
+    "screencapturekit": "^1.0.22"
   },
   "overrides": {
     "macos-version": "5.2.1"
