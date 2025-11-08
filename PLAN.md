@@ -404,7 +404,7 @@ ts-audio-transcriber/
 - ✅ Real-time snippet transcription working
 - ✅ Post-session transcript processing working
 
-**Recent Bug Fixes** (November 2024):
+**Recent Bug Fixes** (November 2025):
 - ✅ Fixed duplicate audio chunks bug in EventEmitter (see DECISIONS.md)
 - ✅ Removed sox `rate` effect that was buffering audio
 - ✅ Audio now streams continuously with unique chunks

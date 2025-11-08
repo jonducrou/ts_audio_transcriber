@@ -697,7 +697,7 @@ recording: {
 
 ### Decision: Add Coqui STT Engine ✅
 
-**Date**: November 2024
+**Date**: November 2025
 
 **Context**: User requested to expand engine options to provide more flexibility. Three candidates considered: Faster Whisper, Silero Models, and Coqui STT/DeepSpeech.
 
@@ -750,7 +750,7 @@ Coqui STT will not work on Apple Silicon Macs without compiling from source. Use
 
 ### Decision: Disable Sox Silence Detection for Continuous Recording ✅
 
-**Date**: November 2024
+**Date**: November 2025
 
 **Context**: During testing, microphone recordings were producing choppy, repeating audio that resulted in poor transcription quality. Vosk and Whisper both produced garbled, repeated text like "one one two to three three...".
 
@@ -800,7 +800,7 @@ const microphoneOptions = {
 
 ### Decision: Remove Coqui STT Engine ✅
 
-**Date**: November 2024
+**Date**: November 2025
 
 **Context**: The `stt` npm package (Coqui STT) does not provide prebuilt binaries for Apple Silicon (darwin-arm64), causing installation and runtime failures on M1/M2 Macs. Since most modern development happens on Apple Silicon, maintaining an engine that doesn't work on the primary platform creates confusion and support burden.
 
@@ -831,7 +831,7 @@ const microphoneOptions = {
 
 ### Decision: Fix Buffer Overrun in Audio Stream Processing ✅
 
-**Date**: November 2024
+**Date**: November 2025
 
 **Context**: During testing, sox was outputting warnings: "unhandled buffer overrun. Data discarded" because the audio stream wasn't being consumed fast enough. Vosk processing takes 8+ seconds per 15-second chunk, causing the stdout buffer from sox to overflow and drop audio data.
 
@@ -883,7 +883,7 @@ stream.onData((audioData: Buffer, timestamp: number) => {
 
 ### Decision: Fix Low Audio Amplitude with node-record-lpcm16 ✅
 
-**Date**: November 2024
+**Date**: November 2025
 
 **Context**: When using sox directly with raw PCM output, audio amplitude was extremely low (avg=37.6, max=63 instead of thousands), resulting in nearly silent, distorted audio and poor transcription quality.
 
@@ -938,7 +938,7 @@ const micProcess = recording.stream();
 
 ### Decision: Fix Duplicate Audio Chunks from EventEmitter Double-Callback ✅
 
-**Date**: November 2024
+**Date**: November 2025
 
 **Context**: Audio recordings had repeating/stuttering words where each phrase was duplicated. Test recordings showed pairs of chunks with identical first 16 bytes, indicating audio data was being duplicated at the stream level.
 
@@ -1036,7 +1036,7 @@ Chunk 4: 3d ff 3c ff 5a ff 44 ff 44 ff 8f ff a1 ff 9e ff  ← DIFFERENT
 
 ### Decision: Fix Whisper Module Loading for whisper-node ✅
 
-**Date**: November 2024
+**Date**: November 2025
 
 **Context**: Whisper engine was returning empty results `[]` when attempting to transcribe audio. Direct testing revealed that whisper-node works correctly and returns transcriptions with `.speech` properties, but the integration in WhisperTranscriptionEngine was failing.
 
@@ -1109,5 +1109,5 @@ The module loading is now correct and Whisper works for isolated file transcript
 
 ---
 
-**Last Updated**: November 2024
+**Last Updated**: November 2025
 **Status**: Living document - update as new decisions are made
