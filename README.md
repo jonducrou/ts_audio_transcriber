@@ -79,9 +79,28 @@ npm install ts-audio-transcriber
 
 Before using the library, you need to download a Vosk speech recognition model:
 
-1. Visit [Vosk Models](https://alphacephei.com/vosk/models)
-2. Download a model for your language (e.g., `vosk-model-en-us-0.22` for English)
-3. Extract it to your project's `models/` directory
+1. **Visit** [Vosk Models](https://alphacephei.com/vosk/models)
+2. **Choose a model** for your language and use case:
+   - For English (US): `vosk-model-en-us-0.22-lgraph` (128 MB, recommended balance)
+   - For faster/smaller: `vosk-model-small-en-us-0.15` (40 MB, lower accuracy)
+   - For best accuracy: `vosk-model-en-us-0.22` (1.8 GB, high accuracy)
+3. **Download and extract** the ZIP file
+4. **Place the extracted folder** in your project's `models/` directory
+
+**Example directory structure:**
+```
+your-project/
+├── models/
+│   └── vosk-model-en-us-0.22-lgraph/    ← Extracted model folder
+│       ├── am/
+│       ├── conf/
+│       ├── graph/
+│       └── ivector/
+├── node_modules/
+└── package.json
+```
+
+**Model path in code:** `./models/vosk-model-en-us-0.22-lgraph`
 
 ### Basic Usage: Both Modes (Recommended for Note-Taking)
 
