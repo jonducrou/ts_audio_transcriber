@@ -43,6 +43,7 @@
     "typescript": "^5.0.0"
   },
   "dependencies": {
+    "macos-version": "5.2.1",
     "node-record-lpcm16": "^1.0.1",
     "screencapturekit": "^1.0.22",
     "vosk-koffi": "^1.1.1",
