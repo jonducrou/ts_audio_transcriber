@@ -1,38 +1,70 @@
 # TypeScript Audio Transcriber
 
-A comprehensive **open source** TypeScript library for real-time audio transcription on macOS, supporting both microphone and system audio capture with on-device processing using Vosk speech recognition.
+A comprehensive **open source** TypeScript library for **dual-mode audio transcription** on macOS, designed specifically for note-taking applications. Provides both real-time 15-second snippets for live decision-making AND complete high-accuracy session transcripts for 1+ hour recordings using Vosk and Whisper speech recognition engines.
 
 ## ✨ Features
 
+### Dual-Mode Transcription
+- ⚡ **15-Second Live Snippets** - Real-time events every 15 seconds during recording (< 1s latency)
+- 📝 **Complete Session Transcripts** - High-accuracy transcription of entire 1+ hour sessions after stopping
+- 🎯 **Multiple Engines** - Choose between Vosk (fast) or Whisper (accurate)
+- 🔄 **Simultaneous Operation** - Both modes run in parallel without interference
+
+### Audio Capture
 - 🎤 **Microphone Capture** - Real-time transcription of microphone input
 - 🔊 **System Audio Capture** - Transcribe system audio output using ScreenCaptureKit
-- ⚡ **Real-time Processing** - Stream transcriptions with <500ms latency
-- 🔒 **Privacy-First** - All processing happens on-device with Vosk
 - 📱 **Source Detection** - Clearly identify whether transcription comes from mic or system audio
-- 🆓 **Completely Free** - No API keys, no usage limits, no paid services
-- 🎯 **TypeScript Native** - Full type safety and modern development experience
+
+### Privacy & Performance
+- 🔒 **Privacy-First** - All processing happens on-device (Vosk, Whisper)
+- 💾 **Session Recording** - Optional audio recording to disk for post-processing
 - 📊 **Performance Metrics** - Built-in monitoring for latency, memory usage, and errors
-- 🔌 **Extensible Design** - Easy to add additional transcription engines
+- 🆓 **Completely Free** - No API keys, no usage limits, no paid services
+
+### Supported Engines
+- **Vosk** - Fast real-time transcription, 20+ languages, low resource usage
+- **Whisper** - High accuracy, excellent for session transcripts, state-of-the-art model
+
+### Developer Experience
+- 🎯 **TypeScript Native** - Full type safety and modern development experience
+- 🔌 **Independent Pipelines** - Enable snippets only, session only, or both
+- 📋 **Clear Events** - Distinct event types for snippets vs. session transcripts
+- 🛠️ **Configurable** - Control every aspect of transcription behaviour
 
 ## 🏗️ Architecture
 
 ```
-┌─────────────────┐    ┌──────────────────┐    ┌─────────────────┐
-│   Audio Sources │    │  Audio Capture   │    │  Transcription  │
-│                 │    │                  │    │     Engine      │
-│ • Microphone    │───▶│ ScreenCaptureKit │───▶│      Vosk       │
-│ • System Audio  │    │    Wrapper       │    │   (Open Source) │
-└─────────────────┘    └──────────────────┘    └─────────────────┘
-                                                         │
-                                                         ▼
-                              ┌─────────────────────────────────────┐
-                              │         Event Emitter               │
-                              │                                     │
-                              │ • transcription events              │
-                              │ • error handling                    │
-                              │ • performance metrics               │
-                              │ • device state changes              │
-                              └─────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────┐
+│                  AudioTranscriber                         │
+│               (Dual-Pipeline Orchestrator)                │
+└────────────────────────┬─────────────────────────────────┘
+                         │
+                         ▼
+        ┌────────────────────────────────┐
+        │      Audio Capture             │
+        │    (ScreenCaptureKit)          │
+        └────────┬───────────────────────┘
+                 │
+                 │ (Broadcasts to all pipelines)
+                 │
+    ┌────────────┼───────────┬─────────────┐
+    │            │           │             │
+    ▼            ▼           ▼             ▼
+┌────────┐  ┌─────────┐ ┌────────────┐ ┌─────────────┐
+│Session │  │ Snippet │ │  Session   │ │             │
+│Recorder│  │Pipeline │ │  Pipeline  │ │   Events    │
+│(Disk)  │  │ Vosk    │ │  Whisper   │ │             │
+└────┬───┘  │ 15-sec  │ │ Post-Stop  │ │ • snippet   │
+     │      └────┬────┘ └─────┬──────┘ │ • session   │
+     │           │            │        │ • recording │
+     │           │            │        │ • metrics   │
+     │           ▼            │        └─────────────┘
+     │     Live Snippets      │
+     │     Every 15s          │
+     │                        │
+     └────────(After Stop)────┘
+              Complete
+             Transcript
 ```
 
 ## 🚀 Quick Start
@@ -51,26 +83,78 @@ Before using the library, you need to download a Vosk speech recognition model:
 2. Download a model for your language (e.g., `vosk-model-en-us-0.22` for English)
 3. Extract it to your project's `models/` directory
 
-### Basic Usage
+### Basic Usage: Both Modes (Recommended for Note-Taking)
 
 ```typescript
-import { AudioTranscriber, createTranscriber } from 'ts-audio-transcriber';
+import { AudioTranscriber } from 'ts-audio-transcriber';
 
-// Create transcriber instance
-const transcriber = createTranscriber({
+// Create transcriber with both snippet and session pipelines
+const transcriber = new AudioTranscriber({
   enableMicrophone: true,
-  enableSystemAudio: false,
-  engine: {
+
+  // Real-time 15-second snippets
+  snippets: {
+    enabled: true,
+    intervalSeconds: 15,
     engine: 'vosk',
-    language: 'en',
-    modelPath: './models/vosk-model-en-us-0.22'
+    confidenceThreshold: 0.4,
+    engineOptions: {
+      modelPath: './models/vosk-model-en-us-0.22'
+    }
+  },
+
+  // Complete session transcript after stopping
+  sessionTranscript: {
+    enabled: true,
+    engine: 'whisper',
+    confidenceThreshold: 0.7,
+    engineOptions: {
+      modelPath: './models/ggml-base.en.bin'
+    }
+  },
+
+  // Recording configuration (required for session pipeline)
+  recording: {
+    enabled: true,
+    outputDir: './recordings',
+    format: 'wav',
+    autoCleanup: false  // Keep recordings for backup
   }
 });
 
-// Listen for transcription events
-transcriber.on('transcription', (event) => {
-  console.log(`[${event.source}] ${event.text}`);
+// Listen for live snippets (every ~15 seconds during recording)
+transcriber.on('snippet', (event) => {
+  console.log(`Snippet ${event.snippetIndex}: ${event.text}`);
   console.log(`Confidence: ${(event.confidence * 100).toFixed(1)}%`);
+
+  // Use for live decision-making
+  if (event.text.includes('important')) {
+    flagForReview();
+  }
+});
+
+// Listen for complete session transcript (after stopping)
+transcriber.on('sessionTranscript', (event) => {
+  if (event.isComplete) {
+    console.log('Complete transcript ready!');
+    console.log(`Duration: ${event.metadata.duration}ms`);
+    console.log(`Words: ${event.metadata.wordCount}`);
+    console.log(event.text);
+
+    // Save to database, generate summary, etc.
+    saveTranscript(event.text);
+  }
+});
+
+// Listen for recording events
+transcriber.on('recordingStarted', (metadata) => {
+  console.log(`Recording started: ${metadata.sessionId}`);
+  console.log(`Saving to: ${metadata.audioFilePath}`);
+});
+
+transcriber.on('recordingStopped', (metadata) => {
+  console.log(`Recording stopped: ${metadata.duration}ms`);
+  console.log(`File size: ${metadata.fileSize} bytes`);
 });
 
 // Handle errors
@@ -81,8 +165,89 @@ transcriber.on('error', (error) => {
 // Start transcription
 await transcriber.start();
 
-// Stop when done
+// ... user records meeting for 1+ hour ...
+// (snippets emitted every 15 seconds during recording)
+
+// Stop transcription
 await transcriber.stop();
+// (session transcript emitted after processing complete)
+```
+
+### Snippets Only (Real-Time Captions)
+
+```typescript
+import { AudioTranscriber } from 'ts-audio-transcriber';
+
+// Just real-time snippets, no session transcription
+const transcriber = new AudioTranscriber({
+  enableMicrophone: true,
+
+  snippets: {
+    enabled: true,
+    intervalSeconds: 15,
+    engine: 'vosk',
+    engineOptions: {
+      modelPath: './models/vosk-model-en-us-0.22'
+    }
+  },
+
+  sessionTranscript: {
+    enabled: false  // Disable session pipeline
+  },
+
+  recording: {
+    enabled: false  // No recording needed
+  }
+});
+
+transcriber.on('snippet', (event) => {
+  updateLiveCaptions(event.text);
+});
+
+await transcriber.start();
+```
+
+### Session Transcript Only (Batch Processing)
+
+```typescript
+import { AudioTranscriber } from 'ts-audio-transcriber';
+
+// Just final transcript, no real-time snippets
+const transcriber = new AudioTranscriber({
+  enableMicrophone: true,
+
+  snippets: {
+    enabled: false  // Disable snippet pipeline
+  },
+
+  sessionTranscript: {
+    enabled: true,
+    engine: 'whisper',
+    engineOptions: {
+      modelPath: './models/ggml-base.en.bin'
+    }
+  },
+
+  recording: {
+    enabled: true,
+    outputDir: './recordings',
+    format: 'wav',
+    autoCleanup: true  // Delete after transcription
+  }
+});
+
+// Only session transcript event, no snippets
+transcriber.on('sessionTranscript', (event) => {
+  if (event.isComplete) {
+    console.log('Transcript:', event.text);
+    saveToArchive(event.text);
+  }
+});
+
+await transcriber.start();
+// ... record ...
+await transcriber.stop();
+// ... wait for processing ...
 ```
 
 ### Advanced Configuration
@@ -91,25 +256,51 @@ await transcriber.stop();
 import { AudioTranscriber } from 'ts-audio-transcriber';
 
 const transcriber = new AudioTranscriber({
+  // Audio sources
   enableMicrophone: true,
-  enableSystemAudio: true, // Capture both sources
-  enablePartialResults: true,
-  confidenceThreshold: 0.7,
-  engine: {
+  enableSystemAudio: true,  // Capture both mic and system audio
+  microphoneDeviceId: 'specific-device-id',  // Optional
+
+  // Snippet pipeline
+  snippets: {
+    enabled: true,
+    intervalSeconds: 10,  // Custom interval (default 15)
     engine: 'vosk',
-    language: 'en',
-    modelPath: './models/vosk-model-en-us-0.22',
+    confidenceThreshold: 0.3,
     engineOptions: {
-      enableWords: true, // Get word-level confidence
+      modelPath: './models/vosk-model-en-us-0.22',
+      enableWords: true,  // Word-level confidence
       sampleRate: 16000
     }
   },
+
+  // Session pipeline
+  sessionTranscript: {
+    enabled: true,
+    engine: 'whisper',
+    confidenceThreshold: 0.7,
+    engineOptions: {
+      modelPath: './models/ggml-large.bin',  // Larger model for better accuracy
+      language: 'en'
+    }
+  },
+
+  // Recording
+  recording: {
+    enabled: true,
+    outputDir: '/path/to/recordings',
+    format: 'wav',
+    autoCleanup: false,
+    maxDuration: 36000  // 10 hours max (safety)
+  },
+
+  // Audio configuration
   audioConfig: {
     sampleRate: 16000,
     channels: 1,
+    bitDepth: 16,
     bufferSize: 1024
-  },
-  microphoneDeviceId: 'specific-device-id'
+  }
 });
 
 // Get available audio devices
@@ -118,9 +309,10 @@ console.log('Available devices:', devices);
 
 // Monitor performance
 transcriber.on('metrics', (metrics) => {
-  console.log(`Latency: ${metrics.averageLatency}ms`);
+  console.log(`Snippet count: ${metrics.snippetCount}`);
+  console.log(`Snippet latency: ${metrics.snippetAverageLatency}ms`);
   console.log(`Memory: ${metrics.memoryUsage}MB`);
-  console.log(`Transcriptions: ${metrics.transcriptionCount}`);
+  console.log(`CPU: ${metrics.cpuUsage}%`);
 });
 
 await transcriber.start();
@@ -150,7 +342,7 @@ Check out the [examples](./examples/) directory for complete working examples:
 
 ### `AudioTranscriber`
 
-The main class for audio transcription.
+The main class for dual-mode audio transcription.
 
 #### Constructor
 
@@ -160,21 +352,31 @@ new AudioTranscriber(options?: TranscriberOptions)
 
 #### Methods
 
-- `start()` - Start audio transcription
-- `stop()` - Stop audio transcription
+- `start()` - Start audio transcription and recording
+- `stop()` - Stop audio transcription and recording
 - `getAvailableDevices()` - Get list of available audio devices
 - `getMetrics()` - Get current performance metrics
 - `isRunning()` - Check if transcriber is currently running
 - `updateOptions(options)` - Update configuration options
+- `getSessionId()` - Get current session ID (if recording active)
+- `getRecordingPath()` - Get path to current recording file
 
 #### Events
 
-- `transcription` - Emitted when transcription text is available
-- `error` - Emitted when an error occurs
+**Transcription Events:**
+- `snippet` - Emitted every ~15 seconds with real-time snippet
+- `sessionTranscript` - Emitted after stopping with complete transcript
+
+**Recording Events:**
+- `recordingStarted` - Emitted when recording begins
+- `recordingStopped` - Emitted when recording ends
+- `recordingProgress` - Emitted periodically during recording (optional)
+
+**Lifecycle Events:**
 - `started` - Emitted when transcriber starts
 - `stopped` - Emitted when transcriber stops
-- `deviceChange` - Emitted when audio devices change
-- `metrics` - Emitted with performance metrics
+- `error` - Emitted when an error occurs
+- `metrics` - Emitted with performance metrics (every 5 seconds)
 
 ### Type Definitions
 
@@ -182,20 +384,68 @@ new AudioTranscriber(options?: TranscriberOptions)
 interface TranscriberOptions {
   enableMicrophone?: boolean;
   enableSystemAudio?: boolean;
-  engine?: EngineConfig;
-  audioConfig?: AudioStreamConfig;
   microphoneDeviceId?: string;
-  enablePartialResults?: boolean;
-  confidenceThreshold?: number;
+  audioConfig?: AudioStreamConfig;
+
+  snippets?: {
+    enabled: boolean;
+    intervalSeconds?: number;        // Default: 15
+    engine: 'vosk' | 'whisper';
+    confidenceThreshold?: number;    // Default: 0.4
+    engineOptions?: Record<string, any>;
+  };
+
+  sessionTranscript?: {
+    enabled: boolean;
+    engine: 'vosk' | 'whisper';
+    confidenceThreshold?: number;    // Default: 0.7
+    engineOptions?: Record<string, any>;
+  };
+
+  recording?: {
+    enabled: boolean;
+    outputDir: string;
+    format: 'wav';
+    autoCleanup?: boolean;
+    maxDuration?: number;
+  };
 }
 
-interface TranscriptionEvent {
+interface SnippetTranscriptionEvent {
   text: string;
   source: 'microphone' | 'system-audio';
   confidence: number;
   timestamp: number;
-  isPartial: boolean;
-  engine: 'vosk';
+  snippetIndex: number;              // 0, 1, 2...
+  engine: 'vosk' | 'whisper';
+  type: 'snippet';
+}
+
+interface SessionTranscriptionEvent {
+  text: string;                      // Complete transcript
+  source: 'microphone' | 'system-audio';
+  confidence: number;
+  timestamp: number;
+  sessionId: string;
+  isComplete: boolean;
+  engine: 'vosk' | 'whisper';
+  type: 'session';
+  metadata: {
+    duration: number;                // Total duration (ms)
+    wordCount: number;
+    processingTime: number;
+  };
+}
+
+interface RecordingMetadata {
+  sessionId: string;
+  audioFilePath: string;
+  duration: number;
+  fileSize: number;
+  sampleRate: number;
+  channels: number;
+  startTime: number;
+  endTime?: number;
 }
 ```
 

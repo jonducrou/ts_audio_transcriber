@@ -330,65 +330,51 @@ export class MacAudioCapture implements AudioCapture {
     return new Promise((resolve, reject) => {
       try {
         if (source === 'microphone') {
-          // Use real microphone recording for microphone capture
-          console.log(`Starting real microphone capture for ${source}`);
+          // Use sox directly with raw PCM output and large buffer
+          console.log(`Starting raw PCM microphone capture for ${source}`);
 
-          const microphoneOptions = {
-            sampleRateHertz: options.sampleRate || 16000,
-            threshold: 0,
-            verbose: false,
-            recordProgram: 'rec', // Use sox for recording
-            silence: '1.0',
-            channels: options.channels || 1,
-            format: 'S16_LE',
-          };
+          const sampleRate = options.sampleRate || 16000;
+          const channels = options.channels || 1;
 
-          const recording = recorder.record(microphoneOptions);
-          console.log(`Started real microphone recording for ${source}`);
+          // Spawn sox directly for raw PCM capture with continuous streaming
+          const soxProcess = spawn('sox', [
+            '-q',                          // Quiet mode (no progress stats)
+            '-d',                          // Default audio input device
+            '-t', 'raw',                   // Output type: raw PCM (NO WAV HEADERS)
+            '-r', sampleRate.toString(),   // Sample rate
+            '-e', 'signed-integer',        // Encoding: signed integer
+            '-b', '16',                    // Bit depth: 16-bit
+            '-c', channels.toString(),     // Channels
+            '-'                            // Output to stdout (no rate effect - allows continuous streaming)
+          ], {
+            stdio: ['ignore', 'pipe', 'pipe'],
+            // Large buffer to prevent overruns during transcription processing
+            env: { ...process.env, AUDIODRIVER: 'coreaudio' }
+          });
 
-          // Create a dummy process object that mimics ChildProcess interface
-          const mockProcess = {
-            stdout: recording.stream(),
-            stderr: { on: () => {} },
-            stdin: { write: () => {}, end: () => {} },
-            pid: Date.now(),
-            killed: false,
-            exitCode: null,
-            on: (event: string, callback: Function) => {
-              if (event === 'error') {
-                recording.stream().on('error', callback);
-              } else if (event === 'exit') {
-                recording.stream().on('end', () => callback(0));
-              }
-            },
-            once: (event: string, callback: Function) => {
-              if (event === 'error') {
-                recording.stream().once('error', callback);
-              } else if (event === 'exit') {
-                recording.stream().once('end', () => callback(0));
-              }
-            },
-            removeListener: () => {},
-            kill: (signal?: string) => {
-              try {
-                recording.stop();
-                (mockProcess as any).killed = true;
-                console.log(`Stopped microphone recording for ${source}`);
-              } catch (error) {
-                console.warn('Error stopping recording:', error);
-              }
-            }
-          };
+          console.log(`Started sox raw PCM microphone recording for ${source}`);
 
-          recording.stream().on('error', (error: Error) => {
-            console.error('Microphone recording error:', error);
+          soxProcess.on('error', (error: Error) => {
+            console.error('Sox recording error:', error);
             reject(error);
           });
 
-          // Resolve immediately as recording starts
+          soxProcess.stderr?.on('data', (data: Buffer) => {
+            const message = data.toString();
+            // Only log actual errors, not warnings
+            if (message.includes('FAIL') || message.includes('ERROR')) {
+              console.error('Sox error:', message);
+            }
+          });
+
+          // Wait for sox to initialize
           setTimeout(() => {
-            console.log(`Started microphone capture process for ${source} (PID: ${mockProcess.pid})`);
-            resolve(mockProcess as any);
+            if (!soxProcess.killed) {
+              console.log(`Microphone capture started for ${source} (PID: ${soxProcess.pid})`);
+              resolve(soxProcess);
+            } else {
+              reject(new Error('Sox process failed to start'));
+            }
           }, 100);
 
         } else {

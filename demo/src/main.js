@@ -58,17 +58,20 @@ function createWindow() {
   console.log('=== DEMO APP STARTING ===');
   console.log(`Debug log file: ${logFile}`);
 
-  // Open DevTools for debugging (optional)
-  // mainWindow.webContents.openDevTools();
+  // Open DevTools for debugging
+  mainWindow.webContents.openDevTools();
 
   mainWindow.on('closed', () => {
     // Clean up transcriber when window is closed
     if (transcriber) {
-      cleanupTranscriberListeners();
-      transcriber.stop().catch(err => {
+      transcriber.stop().then(() => {
+        cleanupTranscriberListeners();
+        transcriber = null;
+      }).catch(err => {
         console.error('Error stopping transcriber on window close:', err);
+        cleanupTranscriberListeners();
+        transcriber = null;
       });
-      transcriber = null;
     }
     mainWindow = null;
   });
@@ -188,7 +191,7 @@ ipcMain.handle('request-permissions', async () => {
 
 ipcMain.handle('start-transcription', async (event, options) => {
   try {
-    console.log('=== STARTING TRANSCRIPTION ===');
+    console.log('=== STARTING TRANSCRIPTION (DUAL-MODE) ===');
     console.log('Options:', JSON.stringify(options, null, 2));
 
     if (transcriber) {
@@ -196,16 +199,38 @@ ipcMain.handle('start-transcription', async (event, options) => {
       await transcriber.stop();
     }
 
-    console.log('Creating new AudioTranscriber instance...');
+    console.log('Creating new AudioTranscriber instance with dual pipelines...');
     transcriber = new AudioTranscriber({
       enableMicrophone: options.enableMicrophone || false,
       enableSystemAudio: options.enableSystemAudio || false,
-      enablePartialResults: options.enablePartialResults || true,
-      confidenceThreshold: options.confidenceThreshold || 0.3,
-      engine: {
+
+      // Snippet pipeline configuration
+      snippets: options.snippets || {
+        enabled: true,
+        intervalSeconds: 15,
         engine: 'vosk',
-        language: options.language || 'en',
-        modelPath: options.modelPath || './models/vosk-model-small-en-us-0.15'
+        confidenceThreshold: 0.4,
+        engineOptions: {
+          modelPath: './models/vosk-model-en-us-0.22-lgraph'
+        }
+      },
+
+      // Session transcript configuration
+      sessionTranscript: options.sessionTranscript || {
+        enabled: true,
+        engine: 'whisper',
+        confidenceThreshold: 0.7,
+        engineOptions: {
+          modelPath: './models/ggml-base.en.bin'
+        }
+      },
+
+      // Recording configuration
+      recording: options.recording || {
+        enabled: true,
+        outputDir: './recordings',
+        format: 'wav',
+        autoCleanup: false
       }
     });
 
@@ -214,19 +239,78 @@ ipcMain.handle('start-transcription', async (event, options) => {
     // Set up event listeners with comprehensive safety checks
     console.log('Setting up transcriber event listeners...');
 
-    const transcriptionListener = (event) => {
+    const snippetListener = (event) => {
       try {
-        console.log('=== TRANSCRIPTION EVENT ===');
+        console.log('=== SNIPPET EVENT ===');
+        console.log('Index:', event.snippetIndex);
         console.log('Text:', event.text);
         console.log('Source:', event.source);
         console.log('Confidence:', event.confidence);
-        console.log('Partial:', event.isPartial);
+        console.log('Engine:', event.engine);
 
         if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents && !mainWindow.webContents.isDestroyed()) {
-          mainWindow.webContents.send('transcription', event);
+          mainWindow.webContents.send('snippet', event);
         }
       } catch (err) {
-        console.log('Transcription listener error (safe ignore):', err.message);
+        console.log('Snippet listener error (safe ignore):', err.message);
+      }
+    };
+
+    const sessionTranscriptListener = (event) => {
+      try {
+        console.log('=== SESSION TRANSCRIPT EVENT ===');
+        console.log('SessionId:', event.sessionId);
+        console.log('Text:', event.text);
+        console.log('Source:', event.source);
+        console.log('Confidence:', event.confidence);
+        console.log('Engine:', event.engine);
+        console.log('Metadata:', event.metadata);
+
+        if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents && !mainWindow.webContents.isDestroyed()) {
+          mainWindow.webContents.send('sessionTranscript', event);
+        }
+      } catch (err) {
+        console.log('Session transcript listener error (safe ignore):', err.message);
+      }
+    };
+
+    const recordingStartedListener = (metadata) => {
+      try {
+        console.log('=== RECORDING STARTED ===');
+        console.log('SessionId:', metadata.sessionId);
+        console.log('FilePath:', metadata.audioFilePath);
+
+        if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents && !mainWindow.webContents.isDestroyed()) {
+          mainWindow.webContents.send('recordingStarted', metadata);
+        }
+      } catch (err) {
+        console.log('Recording started listener error (safe ignore):', err.message);
+      }
+    };
+
+    const recordingStoppedListener = (metadata) => {
+      try {
+        console.log('=== RECORDING STOPPED ===');
+        console.log('SessionId:', metadata.sessionId);
+        console.log('FilePath:', metadata.audioFilePath);
+        console.log('Duration:', metadata.duration, 'ms');
+        console.log('FileSize:', metadata.fileSize, 'bytes');
+
+        if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents && !mainWindow.webContents.isDestroyed()) {
+          mainWindow.webContents.send('recordingStopped', metadata);
+        }
+      } catch (err) {
+        console.log('Recording stopped listener error (safe ignore):', err.message);
+      }
+    };
+
+    const recordingProgressListener = (progress) => {
+      try {
+        if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents && !mainWindow.webContents.isDestroyed()) {
+          mainWindow.webContents.send('recordingProgress', progress);
+        }
+      } catch (err) {
+        console.log('Recording progress listener error (safe ignore):', err.message);
       }
     };
 
@@ -274,7 +358,12 @@ ipcMain.handle('start-transcription', async (event, options) => {
       }
     };
 
-    transcriber.on('transcription', transcriptionListener);
+    // Set up all event listeners
+    transcriber.on('snippet', snippetListener);
+    transcriber.on('sessionTranscript', sessionTranscriptListener);
+    transcriber.on('recordingStarted', recordingStartedListener);
+    transcriber.on('recordingStopped', recordingStoppedListener);
+    transcriber.on('recordingProgress', recordingProgressListener);
     transcriber.on('error', errorListener);
     transcriber.on('started', startedListener);
     transcriber.on('stopped', stoppedListener);
@@ -282,7 +371,11 @@ ipcMain.handle('start-transcription', async (event, options) => {
 
     // Store listeners for cleanup
     transcriberEventListeners = [
-      { event: 'transcription', listener: transcriptionListener },
+      { event: 'snippet', listener: snippetListener },
+      { event: 'sessionTranscript', listener: sessionTranscriptListener },
+      { event: 'recordingStarted', listener: recordingStartedListener },
+      { event: 'recordingStopped', listener: recordingStoppedListener },
+      { event: 'recordingProgress', listener: recordingProgressListener },
       { event: 'error', listener: errorListener },
       { event: 'started', listener: startedListener },
       { event: 'stopped', listener: stoppedListener },
@@ -305,9 +398,10 @@ ipcMain.handle('start-transcription', async (event, options) => {
 ipcMain.handle('stop-transcription', async () => {
   try {
     if (transcriber) {
-      // Remove listeners properly before stopping
-      cleanupTranscriberListeners();
+      // Stop transcriber first (this will emit sessionTranscript event)
       await transcriber.stop();
+      // Then remove listeners after all events have been emitted
+      cleanupTranscriberListeners();
       transcriber = null;
     }
     return { success: true };
@@ -373,9 +467,10 @@ app.on('window-all-closed', async () => {
   // Clean up transcriber
   if (transcriber) {
     try {
-      // Remove listeners properly first
-      cleanupTranscriberListeners();
+      // Stop transcriber first to emit all final events
       await transcriber.stop();
+      // Then remove listeners
+      cleanupTranscriberListeners();
       transcriber = null;
     } catch (error) {
       console.error('Error stopping transcriber on app quit:', error);
@@ -391,9 +486,10 @@ app.on('before-quit', async (event) => {
   if (transcriber) {
     event.preventDefault();
     try {
-      // Remove listeners properly first
-      cleanupTranscriberListeners();
+      // Stop transcriber first to emit all final events
       await transcriber.stop();
+      // Then remove listeners
+      cleanupTranscriberListeners();
       transcriber = null;
       app.quit();
     } catch (error) {

@@ -20,6 +20,8 @@ export class VoskTranscriptionEngine extends BaseTranscriptionEngine {
   private recognizer?: any;
   private sampleRate = 16000;
   private lastPartialText = '';
+  private lastFinalText = '';
+  private partialResultCount = 0;
 
   getEngineType(): TranscriptionEngineType {
     return 'vosk';
@@ -80,13 +82,18 @@ export class VoskTranscriptionEngine extends BaseTranscriptionEngine {
       // Create recognizer
       this.recognizer = new Recognizer({ model: this.model, sampleRate: this.sampleRate });
 
-      // Configure recognizer options
-      if (config.engineOptions?.enableWords) {
-        this.recognizer.setWords(true);
+      // Configure recognizer options for better accuracy
+      if (config.engineOptions?.enableWords !== false) {
+        this.recognizer.setWords(true); // Enable word-level timestamps by default
       }
 
       if (config.engineOptions?.enablePartialResults !== false) {
         // Vosk handles partial results by default
+      }
+
+      // Set custom vocabulary if provided for domain-specific accuracy
+      if (config.engineOptions?.vocabulary) {
+        this.recognizer.setGrammar(JSON.stringify(config.engineOptions.vocabulary));
       }
 
       console.log(`Vosk engine initialized successfully with model: ${modelPath}`);
@@ -116,10 +123,16 @@ export class VoskTranscriptionEngine extends BaseTranscriptionEngine {
       );
     }
 
+    // Debug audio data before validation
+    console.log(`[VOSK] Audio data received: ${audioData.length} bytes`);
+    console.log(`[VOSK] Audio data sample: ${Array.from(audioData.slice(0, 8)).map(b => b.toString(16).padStart(2, '0')).join(' ')}`);
+
     if (!this.validateAudioData(audioData)) {
-      console.log('[VOSK] ERROR: Invalid audio data');
+      console.log(`[VOSK] ERROR: Invalid audio data - length: ${audioData.length}, expected >= 320 bytes`);
       return null; // Skip invalid audio data
     }
+
+    console.log('[VOSK] Audio data passed validation');
 
     try {
       // Convert Buffer to appropriate format for Vosk (16-bit PCM)
@@ -162,9 +175,20 @@ export class VoskTranscriptionEngine extends BaseTranscriptionEngine {
 
         if (resultObj.text && resultObj.text.trim()) {
           transcriptionText = resultObj.text.trim();
+
+          // Raw transcription without deduplication to expose underlying issues
+
           isPartial = false;
           confidence = this.extractConfidence(resultObj);
           console.log(`Final transcription: "${transcriptionText}" (confidence: ${confidence})`);
+
+          // Check for duplicate final results
+          if (transcriptionText === this.lastFinalText) {
+            console.log('Skipping duplicate final result');
+            return null;
+          }
+          this.lastFinalText = transcriptionText;
+          this.lastPartialText = ''; // Clear partial when we get final
         }
       } else {
         // Get partial result
@@ -185,12 +209,26 @@ export class VoskTranscriptionEngine extends BaseTranscriptionEngine {
           confidence = 0.3; // Lower confidence for partial results
           console.log(`Partial transcription: "${transcriptionText}"`);
 
-          // Avoid emitting duplicate partial results
-          if (transcriptionText === this.lastPartialText) {
+          // Improved partial result deduplication
+          if (transcriptionText === this.lastPartialText || transcriptionText === this.lastFinalText) {
             console.log('Skipping duplicate partial result');
             return null;
           }
+
+          // Skip if partial is just a subset of the last partial (common with repeated words)
+          if (this.lastPartialText && transcriptionText.length > this.lastPartialText.length) {
+            if (transcriptionText.startsWith(this.lastPartialText)) {
+              // Only emit if it's a significant extension (more than just repeated words)
+              const extension = transcriptionText.substring(this.lastPartialText.length).trim();
+              if (extension.length < 3) {
+                console.log('Skipping minor partial extension');
+                return null;
+              }
+            }
+          }
+
           this.lastPartialText = transcriptionText;
+          this.partialResultCount++;
         }
       }
 
@@ -244,10 +282,46 @@ export class VoskTranscriptionEngine extends BaseTranscriptionEngine {
       }
 
       this.lastPartialText = '';
+      this.lastFinalText = '';
+      this.partialResultCount = 0;
       console.log('Vosk engine cleaned up successfully');
 
     } catch (error) {
       console.warn('Error during Vosk cleanup:', error);
+    }
+  }
+
+  /**
+   * Reset recognizer state (for snippet pipeline to get independent chunks)
+   */
+  public resetRecognizer(): void {
+    if (!this.model) {
+      console.warn('Cannot reset recognizer - model not loaded');
+      return;
+    }
+
+    try {
+      // Get final result before resetting
+      if (this.recognizer) {
+        try {
+          this.recognizer.finalResult();
+        } catch (error) {
+          // Ignore
+        }
+      }
+
+      // Create new recognizer instance to clear state
+      this.recognizer = new Recognizer({ model: this.model, sampleRate: this.sampleRate });
+      this.recognizer.setWords(true);
+
+      // Reset state
+      this.lastPartialText = '';
+      this.lastFinalText = '';
+      this.partialResultCount = 0;
+
+      console.log('[VOSK] Recognizer reset for new snippet');
+    } catch (error) {
+      console.warn('[VOSK] Error resetting recognizer:', error);
     }
   }
 
@@ -405,7 +479,50 @@ export class VoskTranscriptionEngine extends BaseTranscriptionEngine {
       // Create a new recognizer to reset state
       this.recognizer = new Recognizer({ model: this.model, sampleRate: this.sampleRate });
       this.lastPartialText = '';
+      this.lastFinalText = '';
+      this.partialResultCount = 0;
     }
+  }
+
+  /**
+   * Clean up repeated words and phrases from transcription text
+   */
+  private cleanupRepeatedWords(text: string): string {
+    const words = text.split(/\s+/);
+    if (words.length <= 1) return text;
+
+    const cleanedWords: string[] = [];
+
+    // First pass: Remove consecutive duplicate words
+    for (let i = 0; i < words.length; i++) {
+      const currentWord = words[i].toLowerCase();
+      const previousWord = i > 0 ? words[i - 1].toLowerCase() : '';
+
+      if (currentWord !== previousWord) {
+        cleanedWords.push(words[i]);
+      } else {
+        console.log(`Removing repeated word: "${words[i]}"`);
+      }
+    }
+
+    // Second pass: Remove repeated phrases of 2-4 words
+    const finalWords = [...cleanedWords];
+
+    for (let phraseLen = 2; phraseLen <= Math.min(4, Math.floor(finalWords.length / 2)); phraseLen++) {
+      for (let i = 0; i <= finalWords.length - phraseLen * 2; i++) {
+        const phrase1 = finalWords.slice(i, i + phraseLen).map(w => w.toLowerCase()).join(' ');
+        const phrase2 = finalWords.slice(i + phraseLen, i + phraseLen * 2).map(w => w.toLowerCase()).join(' ');
+
+        if (phrase1 === phrase2) {
+          console.log(`Removing repeated phrase: "${finalWords.slice(i + phraseLen, i + phraseLen * 2).join(' ')}"`);
+          finalWords.splice(i + phraseLen, phraseLen);
+          i--; // Check this position again
+          break; // Process one repetition at a time
+        }
+      }
+    }
+
+    return finalWords.join(' ');
   }
 
   /**

@@ -10,9 +10,6 @@ export class ScreenCaptureAudioStream extends EventEmitter implements AudioStrea
   private _source: AudioSource;
   private _config: AudioStreamConfig;
   private _captureProcess?: ChildProcess;
-  private _dataCallback?: (data: Buffer, timestamp: number) => void;
-  private _errorCallback?: (error: Error) => void;
-  private _endCallback?: () => void;
 
   constructor(source: AudioSource, config: AudioStreamConfig, captureProcess?: ChildProcess) {
     super();
@@ -39,10 +36,7 @@ export class ScreenCaptureAudioStream extends EventEmitter implements AudioStrea
     this._captureProcess.stdout?.on('data', (data: Buffer) => {
       if (this._isActive) {
         const timestamp = Date.now();
-
-        if (this._dataCallback) {
-          this._dataCallback(data, timestamp);
-        }
+        // Only emit the event - don't call callback directly to avoid duplicates
         this.emit('data', data, timestamp);
       }
     });
@@ -54,9 +48,6 @@ export class ScreenCaptureAudioStream extends EventEmitter implements AudioStrea
       // Filter out normal status messages from ScreenCaptureKit
       if (message.includes('ERROR') || message.includes('FATAL')) {
         const error = new Error(`Audio capture error: ${message}`);
-        if (this._errorCallback) {
-          this._errorCallback(error);
-        }
         this.emit('error', error);
       } else {
         // Log other messages as debug info
@@ -70,26 +61,16 @@ export class ScreenCaptureAudioStream extends EventEmitter implements AudioStrea
 
       if (code !== 0 && code !== null) {
         const error = new Error(`Audio capture process exited with code ${code}`);
-        if (this._errorCallback) {
-          this._errorCallback(error);
-        }
         this.emit('error', error);
       } else if (signal) {
         console.log(`Audio capture process terminated with signal: ${signal}`);
       }
 
-      if (this._endCallback) {
-        this._endCallback();
-      }
       this.emit('end');
     });
 
     this._captureProcess.on('error', (error: Error) => {
       this._isActive = false;
-
-      if (this._errorCallback) {
-        this._errorCallback(error);
-      }
       this.emit('error', error);
     });
   }
@@ -158,26 +139,15 @@ export class ScreenCaptureAudioStream extends EventEmitter implements AudioStrea
   }
 
   onData(callback: (data: Buffer, timestamp: number) => void): void {
-    this._dataCallback = callback;
     this.on('data', callback);
   }
 
   onError(callback: (error: Error) => void): void {
-    this._errorCallback = callback;
     this.on('error', callback);
   }
 
   onEnd(callback: () => void): void {
-    this._endCallback = callback;
     this.on('end', callback);
-  }
-
-  removeAllListeners(event?: string | symbol): this {
-    super.removeAllListeners(event);
-    this._dataCallback = undefined;
-    this._errorCallback = undefined;
-    this._endCallback = undefined;
-    return this;
   }
 
   /**

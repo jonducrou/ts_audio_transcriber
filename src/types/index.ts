@@ -13,7 +13,8 @@ export type AudioSource = 'microphone' | 'system-audio';
 export type TranscriptionEngineType = 'vosk' | 'whisper';
 
 /**
- * Transcription event containing the transcribed text and metadata
+ * Transcription event containing the transcribed text and metadata (LEGACY - deprecated in v2.0.0)
+ * @deprecated Use SnippetTranscriptionEvent or SessionTranscriptionEvent instead
  */
 export interface TranscriptionEvent {
   /** The transcribed text */
@@ -36,6 +37,116 @@ export interface TranscriptionEvent {
 
   /** Engine that performed the transcription */
   engine: TranscriptionEngineType;
+}
+
+/**
+ * Real-time 15-second snippet transcription event
+ */
+export interface SnippetTranscriptionEvent {
+  /** The transcribed snippet text */
+  text: string;
+
+  /** Source of the audio (microphone or system audio) */
+  source: AudioSource;
+
+  /** Confidence score from 0.0 to 1.0 */
+  confidence: number;
+
+  /** Timestamp when the transcription was completed */
+  timestamp: number;
+
+  /** Index of this snippet within the current session (0, 1, 2...) */
+  snippetIndex: number;
+
+  /** Engine that performed the transcription */
+  engine: TranscriptionEngineType;
+
+  /** Event type discriminator */
+  type: 'snippet';
+}
+
+/**
+ * Complete session transcript event (emitted after stopping)
+ */
+export interface SessionTranscriptionEvent {
+  /** The complete transcript text */
+  text: string;
+
+  /** Source of the audio (microphone or system audio) */
+  source: AudioSource;
+
+  /** Average confidence score from 0.0 to 1.0 */
+  confidence: number;
+
+  /** Session start timestamp */
+  timestamp: number;
+
+  /** Unique session identifier */
+  sessionId: string;
+
+  /** Whether this is the complete final transcript */
+  isComplete: boolean;
+
+  /** Engine that performed the transcription */
+  engine: TranscriptionEngineType;
+
+  /** Event type discriminator */
+  type: 'session';
+
+  /** Session metadata */
+  metadata: {
+    /** Total audio duration in milliseconds */
+    duration: number;
+
+    /** Total word count */
+    wordCount: number;
+
+    /** Time taken to process in milliseconds */
+    processingTime: number;
+  };
+}
+
+/**
+ * Recording metadata and lifecycle information
+ */
+export interface RecordingMetadata {
+  /** Unique session identifier */
+  sessionId: string;
+
+  /** Path to the recorded audio file */
+  audioFilePath: string;
+
+  /** Duration in milliseconds */
+  duration: number;
+
+  /** File size in bytes */
+  fileSize: number;
+
+  /** Sample rate in Hz */
+  sampleRate: number;
+
+  /** Number of channels */
+  channels: number;
+
+  /** Session start timestamp */
+  startTime: number;
+
+  /** Session end timestamp (when stopped) */
+  endTime?: number;
+}
+
+/**
+ * Recording progress information
+ */
+export interface RecordingProgress {
+  /** Unique session identifier */
+  sessionId: string;
+
+  /** Current duration in milliseconds */
+  duration: number;
+
+  /** Current file size in bytes */
+  fileSize: number;
 }
 
 /**
@@ -99,7 +210,64 @@ export interface EngineConfig {
 }
 
 /**
- * Configuration options for the AudioTranscriber
+ * Snippet pipeline configuration
+ */
+export interface SnippetPipelineConfig {
+  /** Enable snippet pipeline */
+  enabled: boolean;
+
+  /** Interval in seconds for snippet chunks (default: 15) */
+  intervalSeconds?: number;
+
+  /** Engine to use for snippets */
+  engine: TranscriptionEngineType;
+
+  /** Minimum confidence threshold for emitting snippets (0.0-1.0) */
+  confidenceThreshold?: number;
+
+  /** Engine-specific options */
+  engineOptions?: Record<string, any>;
+}
+
+/**
+ * Session transcript pipeline configuration
+ */
+export interface SessionTranscriptConfig {
+  /** Enable session transcript pipeline */
+  enabled: boolean;
+
+  /** Engine to use for session transcription */
+  engine: TranscriptionEngineType;
+
+  /** Minimum confidence threshold for session transcript (0.0-1.0) */
+  confidenceThreshold?: number;
+
+  /** Engine-specific options */
+  engineOptions?: Record<string, any>;
+}
+
+/**
+ * Recording configuration
+ */
+export interface RecordingConfig {
+  /** Enable audio recording */
+  enabled: boolean;
+
+  /** Directory to save recordings */
+  outputDir: string;
+
+  /** Audio file format (only WAV supported currently) */
+  format: 'wav';
+
+  /** Automatically delete recording after successful transcription */
+  autoCleanup?: boolean;
+
+  /** Maximum recording duration in seconds (safety limit) */
+  maxDuration?: number;
+}
+
+/**
+ * Configuration options for the AudioTranscriber (v2.0.0)
  */
 export interface TranscriberOptions {
   /** Enable microphone capture */
@@ -108,29 +276,38 @@ export interface TranscriberOptions {
   /** Enable system audio capture */
   enableSystemAudio?: boolean;
 
-  /** Transcription engine configuration */
-  engine?: EngineConfig;
+  /** Custom microphone device ID to use */
+  microphoneDeviceId?: string;
 
   /** Audio stream configuration */
   audioConfig?: AudioStreamConfig;
 
-  /** Custom microphone device ID to use */
-  microphoneDeviceId?: string;
+  /** Snippet pipeline configuration */
+  snippets?: SnippetPipelineConfig;
 
-  /** Whether to emit partial transcription results */
+  /** Session transcript pipeline configuration */
+  sessionTranscript?: SessionTranscriptConfig;
+
+  /** Recording configuration */
+  recording?: RecordingConfig;
+
+  /** @deprecated Use snippets.enabled instead */
   enablePartialResults?: boolean;
 
-  /** Minimum confidence threshold for emitting results (0.0-1.0) */
+  /** @deprecated Use snippets.confidenceThreshold or sessionTranscript.confidenceThreshold instead */
   confidenceThreshold?: number;
 
-  /** Maximum audio buffer size in seconds before processing */
+  /** @deprecated Use recording configuration instead */
   maxBufferDuration?: number;
 
-  /** Enable automatic language detection */
+  /** @deprecated Not implemented in v2.0.0 */
   autoDetectLanguage?: boolean;
 
-  /** Enable speaker diarization if supported */
+  /** @deprecated Not implemented in v2.0.0 */
   enableSpeakerDetection?: boolean;
+
+  /** @deprecated Use snippets.engineOptions instead */
+  engine?: EngineConfig;
 }
 
 /**
@@ -257,11 +434,26 @@ export interface TranscriptionEngine {
 }
 
 /**
- * Performance metrics for monitoring transcription performance
+ * Performance metrics for monitoring transcription performance (v2.0.0)
  */
 export interface PerformanceMetrics {
-  /** Average processing latency in milliseconds */
-  averageLatency: number;
+  /** Snippet pipeline: total snippets processed */
+  snippetCount: number;
+
+  /** Snippet pipeline: average processing latency in milliseconds */
+  snippetAverageLatency: number;
+
+  /** Snippet pipeline: average confidence score */
+  snippetAverageConfidence: number;
+
+  /** Session pipeline: total sessions processed */
+  sessionTranscriptCount: number;
+
+  /** Session pipeline: average processing time in milliseconds */
+  sessionAverageProcessingTime: number;
+
+  /** Session pipeline: average confidence score */
+  sessionAverageConfidence: number;
 
   /** Current CPU usage percentage (estimated) */
   cpuUsage: number;
@@ -269,23 +461,23 @@ export interface PerformanceMetrics {
   /** Memory usage in MB */
   memoryUsage: number;
 
-  /** Number of transcriptions processed */
-  transcriptionCount: number;
-
   /** Number of errors encountered */
   errorCount: number;
-
-  /** Number of partial results emitted */
-  partialResultCount: number;
-
-  /** Average confidence score */
-  averageConfidence: number;
 
   /** Timestamp of last update */
   lastUpdated: number;
 
-  /** Engine-specific metrics */
-  engineMetrics?: Record<string, number>;
+  /** @deprecated Use snippetCount instead */
+  transcriptionCount?: number;
+
+  /** @deprecated Use snippetAverageLatency instead */
+  averageLatency?: number;
+
+  /** @deprecated Use snippetAverageConfidence or sessionAverageConfidence instead */
+  averageConfidence?: number;
+
+  /** @deprecated Not tracked in v2.0.0 */
+  partialResultCount?: number;
 }
 
 /**
@@ -324,11 +516,23 @@ export interface ModelInfo {
 }
 
 /**
- * Event types emitted by the AudioTranscriber
+ * Event types emitted by the AudioTranscriber (v2.0.0)
  */
 export interface AudioTranscriberEvents {
-  /** Emitted when transcription text is available */
-  transcription: (event: TranscriptionEvent) => void;
+  /** Emitted every ~15 seconds with real-time snippet */
+  snippet: (event: SnippetTranscriptionEvent) => void;
+
+  /** Emitted after stopping with complete session transcript */
+  sessionTranscript: (event: SessionTranscriptionEvent) => void;
+
+  /** Emitted when recording starts */
+  recordingStarted: (metadata: RecordingMetadata) => void;
+
+  /** Emitted when recording stops */
+  recordingStopped: (metadata: RecordingMetadata) => void;
+
+  /** Emitted periodically during recording with progress */
+  recordingProgress: (progress: RecordingProgress) => void;
 
   /** Emitted when an error occurs */
   error: (error: TranscriptionError) => void;
@@ -339,20 +543,23 @@ export interface AudioTranscriberEvents {
   /** Emitted when transcriber stops */
   stopped: () => void;
 
-  /** Emitted when audio device state changes */
-  deviceChange: (devices: AudioDevice[]) => void;
-
   /** Emitted periodically with performance metrics */
   metrics: (metrics: PerformanceMetrics) => void;
 
-  /** Emitted when an engine is initialized */
-  engineReady: (engineType: TranscriptionEngineType) => void;
+  /** @deprecated Removed in v2.0.0 - use snippet or sessionTranscript instead */
+  transcription?: (event: TranscriptionEvent) => void;
 
-  /** Emitted when an engine fails */
-  engineError: (engineType: TranscriptionEngineType, error: Error) => void;
+  /** @deprecated Not implemented in v2.0.0 */
+  deviceChange?: (devices: AudioDevice[]) => void;
 
-  /** Emitted when switching between engines */
-  engineSwitch: (from: TranscriptionEngineType, to: TranscriptionEngineType) => void;
+  /** @deprecated Not implemented in v2.0.0 */
+  engineReady?: (engineType: TranscriptionEngineType) => void;
+
+  /** @deprecated Not implemented in v2.0.0 */
+  engineError?: (engineType: TranscriptionEngineType, error: Error) => void;
+
+  /** @deprecated Not implemented in v2.0.0 */
+  engineSwitch?: (from: TranscriptionEngineType, to: TranscriptionEngineType) => void;
 }
 
 /**

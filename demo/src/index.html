@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>TypeScript Audio Transcriber Demo</title>
+    <title>TypeScript Audio Transcriber v2.0 - Dual Mode Demo</title>
     <style>
         * {
             margin: 0;
@@ -20,94 +20,51 @@
         }
 
         .container {
-            display: flex;
+            display: grid;
+            grid-template-columns: 350px 1fr 1fr;
             height: 100vh;
             padding: 20px;
             gap: 20px;
         }
 
-        .control-panel {
+        .panel {
             background: rgba(255, 255, 255, 0.95);
             backdrop-filter: blur(10px);
             border-radius: 15px;
             padding: 25px;
-            width: 400px;
             box-shadow: 0 8px 32px rgba(31, 38, 135, 0.37);
             border: 1px solid rgba(255, 255, 255, 0.18);
             overflow-y: auto;
         }
 
-        .transcription-area {
-            flex: 1;
-            background: rgba(255, 255, 255, 0.95);
-            backdrop-filter: blur(10px);
-            border-radius: 15px;
-            padding: 25px;
-            box-shadow: 0 8px 32px rgba(31, 38, 135, 0.37);
-            border: 1px solid rgba(255, 255, 255, 0.18);
-            display: flex;
-            flex-direction: column;
-        }
-
-        h1, h2 {
+        h1 {
+            font-size: 20px;
             margin-bottom: 20px;
             color: #4a5568;
-        }
-
-        h1 {
-            font-size: 24px;
             text-align: center;
-            margin-bottom: 30px;
         }
 
         h2 {
-            font-size: 18px;
+            font-size: 16px;
+            margin-bottom: 15px;
+            color: #4a5568;
             border-bottom: 2px solid #e2e8f0;
-            padding-bottom: 10px;
+            padding-bottom: 8px;
         }
 
-        .permission-section, .config-section, .control-section, .metrics-section {
-            margin-bottom: 25px;
-        }
-
-        .permission-item {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            padding: 10px 0;
-            border-bottom: 1px solid #e2e8f0;
-        }
-
-        .permission-item:last-child {
-            border-bottom: none;
-        }
-
-        .permission-status {
-            padding: 4px 12px;
-            border-radius: 20px;
-            font-size: 12px;
-            font-weight: 600;
-            text-transform: uppercase;
-        }
-
-        .permission-granted {
-            background: #48bb78;
-            color: white;
-        }
-
-        .permission-denied {
-            background: #f56565;
-            color: white;
+        .section {
+            margin-bottom: 20px;
         }
 
         .form-group {
-            margin-bottom: 15px;
+            margin-bottom: 12px;
         }
 
         label {
             display: block;
             margin-bottom: 5px;
             font-weight: 600;
+            font-size: 13px;
             color: #4a5568;
         }
 
@@ -117,127 +74,171 @@
 
         input[type="text"], input[type="number"], select {
             width: 100%;
-            padding: 10px;
+            padding: 8px;
             border: 2px solid #e2e8f0;
-            border-radius: 8px;
-            font-size: 14px;
-            transition: border-color 0.2s;
-        }
-
-        input[type="text"]:focus, input[type="number"]:focus, select:focus {
-            outline: none;
-            border-color: #667eea;
+            border-radius: 6px;
+            font-size: 13px;
         }
 
         button {
             width: 100%;
-            padding: 12px;
+            padding: 10px;
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             color: white;
             border: none;
             border-radius: 8px;
-            font-size: 16px;
+            font-size: 14px;
             font-weight: 600;
             cursor: pointer;
-            transition: transform 0.2s, box-shadow 0.2s;
-            margin-bottom: 10px;
+            margin-bottom: 8px;
         }
 
         button:hover {
-            transform: translateY(-2px);
+            transform: translateY(-1px);
             box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4);
         }
 
         button:disabled {
-            opacity: 0.6;
+            opacity: 0.5;
             cursor: not-allowed;
             transform: none;
-            box-shadow: none;
         }
 
         .button-stop {
             background: linear-gradient(135deg, #f56565 0%, #e53e3e 100%);
         }
 
-        .button-stop:hover {
-            box-shadow: 0 4px 15px rgba(245, 101, 101, 0.4);
+        .snippets-panel {
+            display: flex;
+            flex-direction: column;
         }
 
-        .transcription-log {
+        .snippet-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .snippet-count {
+            font-size: 12px;
+            color: #718096;
+            background: #edf2f7;
+            padding: 4px 12px;
+            border-radius: 12px;
+        }
+
+        .snippets-log {
             flex: 1;
             background: #f7fafc;
             border: 2px solid #e2e8f0;
             border-radius: 8px;
-            padding: 20px;
+            padding: 15px;
             overflow-y: auto;
-            font-family: 'SF Mono', Consolas, monospace;
-            line-height: 1.6;
+            margin-top: 15px;
         }
 
-        .transcription-entry {
-            margin-bottom: 15px;
+        .snippet-entry {
+            margin-bottom: 12px;
             padding: 12px;
             background: white;
             border-radius: 8px;
-            border-left: 4px solid #48bb78;
-            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+            border-left: 4px solid #4299e1;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
         }
 
-        .transcription-entry.microphone {
-            border-left-color: #4299e1;
-        }
-
-        .transcription-entry.system-audio {
-            border-left-color: #ed8936;
-        }
-
-        .transcription-entry.partial {
-            opacity: 0.7;
-            border-style: dashed;
-        }
-
-        .transcription-meta {
-            font-size: 12px;
+        .snippet-meta {
+            font-size: 11px;
             color: #718096;
-            margin-bottom: 5px;
+            margin-bottom: 6px;
+            display: flex;
+            justify-content: space-between;
         }
 
-        .transcription-text {
+        .snippet-text {
+            font-size: 13px;
+            color: #2d3748;
+            line-height: 1.5;
+        }
+
+        .session-panel {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .session-status {
+            background: #edf2f7;
+            padding: 12px;
+            border-radius: 8px;
+            margin-bottom: 15px;
+            font-size: 12px;
+        }
+
+        .session-status-item {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 6px;
+        }
+
+        .session-status-item:last-child {
+            margin-bottom: 0;
+        }
+
+        .session-transcript {
+            flex: 1;
+            background: #f7fafc;
+            border: 2px solid #e2e8f0;
+            border-radius: 8px;
+            padding: 15px;
+            overflow-y: auto;
+        }
+
+        .session-text {
             font-size: 14px;
             color: #2d3748;
+            line-height: 1.8;
+            font-family: 'Georgia', serif;
+        }
+
+        .session-meta {
+            background: white;
+            padding: 12px;
+            border-radius: 8px;
+            margin-bottom: 15px;
+            font-size: 12px;
+            border: 2px solid #48bb78;
         }
 
         .metrics-grid {
             display: grid;
             grid-template-columns: 1fr 1fr;
-            gap: 10px;
+            gap: 8px;
         }
 
         .metric-item {
             background: #f7fafc;
-            padding: 10px;
-            border-radius: 8px;
+            padding: 8px;
+            border-radius: 6px;
             text-align: center;
         }
 
         .metric-value {
-            font-size: 18px;
+            font-size: 16px;
             font-weight: 600;
             color: #4a5568;
         }
 
         .metric-label {
-            font-size: 12px;
+            font-size: 10px;
             color: #718096;
-            margin-top: 5px;
+            margin-top: 4px;
         }
 
         .status-indicator {
             display: inline-block;
-            width: 10px;
-            height: 10px;
+            width: 8px;
+            height: 8px;
             border-radius: 50%;
-            margin-right: 8px;
+            margin-right: 6px;
         }
 
         .status-running {
@@ -250,137 +251,189 @@
         }
 
         @keyframes pulse {
-            0% { opacity: 1; }
+            0%, 100% { opacity: 1; }
             50% { opacity: 0.5; }
-            100% { opacity: 1; }
         }
 
-        .error-message {
-            background: #fed7d7;
-            color: #c53030;
-            padding: 10px;
-            border-radius: 8px;
-            margin-bottom: 15px;
-            font-size: 14px;
+        .badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 10px;
+            font-size: 10px;
+            font-weight: 600;
+            text-transform: uppercase;
         }
 
-        .info-message {
+        .badge-vosk {
             background: #bee3f8;
-            color: #2b6cb0;
-            padding: 10px;
-            border-radius: 8px;
-            margin-bottom: 15px;
-            font-size: 14px;
+            color: #2c5282;
+        }
+
+        .badge-whisper {
+            background: #fbd38d;
+            color: #7c2d12;
+        }
+
+        .badge-confidence-high {
+            background: #c6f6d5;
+            color: #22543d;
+        }
+
+        .badge-confidence-med {
+            background: #feebc8;
+            color: #7c2d12;
+        }
+
+        .badge-confidence-low {
+            background: #fed7d7;
+            color: #742a2a;
+        }
+
+        .empty-state {
+            text-align: center;
+            color: #a0aec0;
+            padding: 40px 20px;
+            font-size: 13px;
+        }
+
+        .recording-info {
+            background: #c6f6d5;
+            color: #22543d;
+            padding: 8px 12px;
+            border-radius: 6px;
+            font-size: 11px;
+            margin-bottom: 10px;
+        }
+
+        .processing-info {
+            background: #fbd38d;
+            color: #7c2d12;
+            padding: 8px 12px;
+            border-radius: 6px;
+            font-size: 11px;
+            margin-bottom: 10px;
+            animation: pulse 2s infinite;
         }
     </style>
 </head>
 <body>
     <div class="container">
-        <div class="control-panel">
-            <h1>🎤 Audio Transcriber</h1>
+        <!-- Control Panel -->
+        <div class="panel">
+            <h1>🎤 Audio Transcriber v2.0</h1>
 
-            <div class="permission-section">
-                <h2>Permissions</h2>
-                <div class="permission-item">
-                    <span>Microphone Access</span>
-                    <span id="mic-permission" class="permission-status permission-denied">Denied</span>
-                </div>
-                <div class="permission-item">
-                    <span>Screen Recording</span>
-                    <span id="screen-permission" class="permission-status permission-denied">Denied</span>
-                </div>
-                <button onclick="requestPermissions()">Request Permissions</button>
-                <button onclick="testDirectMicrophoneAccess()">Test Direct Mic Access</button>
-            </div>
-
-            <div class="config-section">
-                <h2>Configuration</h2>
-
-                <div class="form-group">
-                    <label>
-                        <input type="checkbox" id="enableMicrophone" checked>
-                        Enable Microphone
-                    </label>
-                </div>
-
-                <div class="form-group">
-                    <label>
-                        <input type="checkbox" id="enableSystemAudio">
-                        Enable System Audio
-                    </label>
-                </div>
-
-                <div class="form-group">
-                    <label>
-                        <input type="checkbox" id="enablePartialResults" checked>
-                        Show Partial Results
-                    </label>
-                </div>
-
-                <div class="form-group">
-                    <label for="confidenceThreshold">Confidence Threshold</label>
-                    <input type="number" id="confidenceThreshold" min="0" max="1" step="0.1" value="0.3">
-                </div>
-
-                <div class="form-group">
-                    <label for="language">Language</label>
-                    <select id="language">
-                        <option value="en">English</option>
-                        <option value="fr">French</option>
-                        <option value="de">German</option>
-                        <option value="es">Spanish</option>
-                    </select>
-                </div>
-
-                <div class="form-group">
-                    <label for="modelPath">Model Path</label>
-                    <input type="text" id="modelPath" value="./models/vosk-model-small-en-us-0.15" placeholder="Path to Vosk model">
-                </div>
-            </div>
-
-            <div class="control-section">
+            <div class="section">
                 <h2>Controls</h2>
                 <button id="startBtn" onclick="startTranscription()">
                     <span class="status-indicator status-stopped"></span>
-                    Start Transcription
+                    Start Recording
                 </button>
                 <button id="stopBtn" onclick="stopTranscription()" class="button-stop" disabled>
-                    Stop Transcription
+                    Stop & Process
                 </button>
-                <button onclick="getDevices()">Refresh Devices</button>
-                <button onclick="clearTranscriptions()">Clear Log</button>
+                <button onclick="clearAll()">Clear All</button>
             </div>
 
-            <div class="metrics-section">
-                <h2>Performance Metrics</h2>
+            <div class="section">
+                <h2>Snippet Pipeline</h2>
+                <div class="form-group">
+                    <label>
+                        <input type="checkbox" id="enableSnippets" checked>
+                        Enable Live Snippets
+                    </label>
+                </div>
+                <div class="form-group">
+                    <label for="snippetInterval">Interval (seconds)</label>
+                    <input type="number" id="snippetInterval" value="15" min="5" max="60">
+                </div>
+                <div class="form-group">
+                    <label for="snippetEngine">Engine</label>
+                    <select id="snippetEngine">
+                        <option value="vosk" selected>Vosk (Fast)</option>
+                        <option value="whisper">Whisper (Accurate)</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label for="snippetThreshold">Confidence</label>
+                    <input type="number" id="snippetThreshold" value="0.2" min="0" max="1" step="0.1">
+                </div>
+            </div>
+
+            <div class="section">
+                <h2>Session Pipeline</h2>
+                <div class="form-group">
+                    <label>
+                        <input type="checkbox" id="enableSession" checked>
+                        Enable Session Transcript
+                    </label>
+                </div>
+                <div class="form-group">
+                    <label for="sessionEngine">Engine</label>
+                    <select id="sessionEngine">
+                        <option value="vosk">Vosk (Fast)</option>
+                        <option value="whisper" selected>Whisper (Accurate)</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label for="sessionThreshold">Confidence</label>
+                    <input type="number" id="sessionThreshold" value="0.7" min="0" max="1" step="0.1">
+                </div>
+            </div>
+
+            <div class="section">
+                <h2>Recording</h2>
+                <div class="form-group">
+                    <label>
+                        <input type="checkbox" id="autoCleanup">
+                        Auto-delete after transcription
+                    </label>
+                </div>
+                <div id="recordingInfo"></div>
+            </div>
+
+            <div class="section">
+                <h2>Metrics</h2>
                 <div class="metrics-grid">
                     <div class="metric-item">
-                        <div class="metric-value" id="latency">0ms</div>
-                        <div class="metric-label">Avg Latency</div>
+                        <div class="metric-value" id="snippetCount">0</div>
+                        <div class="metric-label">Snippets</div>
                     </div>
                     <div class="metric-item">
-                        <div class="metric-value" id="transcriptions">0</div>
-                        <div class="metric-label">Transcriptions</div>
-                    </div>
-                    <div class="metric-item">
-                        <div class="metric-value" id="confidence">0%</div>
-                        <div class="metric-label">Avg Confidence</div>
+                        <div class="metric-value" id="sessionCount">0</div>
+                        <div class="metric-label">Sessions</div>
                     </div>
                     <div class="metric-item">
                         <div class="metric-value" id="memory">0MB</div>
-                        <div class="metric-label">Memory Usage</div>
+                        <div class="metric-label">Memory</div>
+                    </div>
+                    <div class="metric-item">
+                        <div class="metric-value" id="cpu">0%</div>
+                        <div class="metric-label">CPU</div>
                     </div>
                 </div>
             </div>
         </div>
 
-        <div class="transcription-area">
-            <h2>Live Transcription</h2>
-            <div id="messages"></div>
-            <div id="transcriptionLog" class="transcription-log">
-                <div class="info-message">
-                    Welcome to the TypeScript Audio Transcriber Demo!<br>
-                    Configure your settings and click "Start Transcription" to begin.
+        <!-- Snippets Panel -->
+        <div class="panel snippets-panel">
+            <div class="snippet-header">
+                <h2>Live Snippets (15s)</h2>
+                <span class="snippet-count" id="snippetCountBadge">0 snippets</span>
+            </div>
+            <div class="snippets-log" id="snippetsLog">
+                <div class="empty-state">
+                    ⏱️ Live snippets appear here<br>every ~15 seconds during recording
+                </div>
+            </div>
+        </div>
+
+        <!-- Session Panel -->
+        <div class="panel session-panel">
+            <h2>Session Transcript</h2>
+            <div id="sessionStatus"></div>
+            <div class="session-transcript" id="sessionTranscript">
+                <div class="empty-state">
+                    📝 Complete session transcript<br>appears here after stopping
                 </div>
             </div>
         </div>

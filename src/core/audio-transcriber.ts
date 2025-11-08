@@ -3,49 +3,49 @@ import {
   AudioTranscriberEvents,
   TranscriberOptions,
   AudioDevice,
-  TranscriptionEvent,
+  SnippetTranscriptionEvent,
+  SessionTranscriptionEvent,
+  RecordingMetadata,
+  RecordingProgress,
   TranscriptionError,
   TranscriptionErrorType,
   PerformanceMetrics,
   AudioCapture,
-  TranscriptionEngine,
   AudioStream,
-  EngineConfig,
-  TranscriptionEngineType
+  AudioSource
 } from '../types';
 import { MacAudioCapture } from '../audio/capture';
-import { VoskTranscriptionEngine } from '../engines/vosk/vosk-engine';
+import { SessionRecorder } from './session-recorder';
+import { SnippetPipeline } from './snippet-pipeline';
+import { SessionPipeline } from './session-pipeline';
 
 /**
- * Main AudioTranscriber class that orchestrates audio capture and transcription
+ * Main AudioTranscriber class - orchestrates dual-mode transcription (v2.0.0)
+ *
+ * Provides two simultaneous transcription modes:
+ * 1. Snippet Pipeline: Real-time 15-second chunks (Vosk, low latency)
+ * 2. Session Pipeline: Complete session transcript (Whisper, high accuracy)
  */
 export class AudioTranscriber extends EventEmitter {
   private _audioCapture: AudioCapture;
-  private _transcriptionEngine: TranscriptionEngine;
+  private _sessionRecorder?: SessionRecorder;
+  private _snippetPipeline?: SnippetPipeline;
+  private _sessionPipeline?: SessionPipeline;
   private _options: TranscriberOptions;
   private _isRunning = false;
   private _microphoneStream?: AudioStream;
   private _systemAudioStream?: AudioStream;
   private _metrics: PerformanceMetrics;
   private _metricsInterval?: NodeJS.Timeout;
-  private _processingQueue: Array<{ data: Buffer; source: string; timestamp: number }> = [];
-  private _isProcessing = false;
+  private _recordingProgressInterval?: NodeJS.Timeout;
 
   constructor(options: TranscriberOptions = {}) {
     super();
 
+    // Set defaults
     this._options = {
       enableMicrophone: true,
       enableSystemAudio: false,
-      enablePartialResults: true,
-      confidenceThreshold: 0.3,
-      maxBufferDuration: 10,
-      autoDetectLanguage: false,
-      enableSpeakerDetection: false,
-      engine: {
-        engine: 'vosk',
-        language: 'en'
-      },
       audioConfig: {
         sampleRate: 16000,
         channels: 1,
@@ -56,17 +56,21 @@ export class AudioTranscriber extends EventEmitter {
       ...options
     };
 
+    // Validate configuration
+    this.validateOptions();
+
     this._audioCapture = new MacAudioCapture();
-    this._transcriptionEngine = this.createTranscriptionEngine();
 
     this._metrics = {
-      averageLatency: 0,
+      snippetCount: 0,
+      snippetAverageLatency: 0,
+      snippetAverageConfidence: 0,
+      sessionTranscriptCount: 0,
+      sessionAverageProcessingTime: 0,
+      sessionAverageConfidence: 0,
       cpuUsage: 0,
       memoryUsage: 0,
-      transcriptionCount: 0,
       errorCount: 0,
-      partialResultCount: 0,
-      averageConfidence: 0,
       lastUpdated: Date.now()
     };
 
@@ -74,7 +78,7 @@ export class AudioTranscriber extends EventEmitter {
   }
 
   /**
-   * Start audio transcription
+   * Start audio transcription (both pipelines and recording as configured)
    */
   async start(): Promise<void> {
     if (this._isRunning) {
@@ -85,16 +89,19 @@ export class AudioTranscriber extends EventEmitter {
     }
 
     try {
-      console.log('=== AUDIOTRANSCRIBER START ===');
-      console.log('Options:', JSON.stringify(this._options, null, 2));
+      console.log('=== AUDIOTRANSCRIBER v2.0.0 START ===');
+      console.log('Configuration:', {
+        microphone: this._options.enableMicrophone,
+        systemAudio: this._options.enableSystemAudio,
+        snippets: this._options.snippets?.enabled,
+        session: this._options.sessionTranscript?.enabled,
+        recording: this._options.recording?.enabled
+      });
 
       // Initialize audio capture
       if (this._audioCapture.initialize) {
         await this._audioCapture.initialize();
       }
-
-      // Initialize transcription engine
-      await this._transcriptionEngine.initialize(this._options.engine!);
 
       // Request permissions
       const hasPermissions = await this._audioCapture.requestPermissions();
@@ -105,7 +112,42 @@ export class AudioTranscriber extends EventEmitter {
         );
       }
 
-      // Start audio streams based on configuration
+      // Initialize recording if enabled
+      if (this._options.recording?.enabled) {
+        this._sessionRecorder = new SessionRecorder(
+          this._options.recording,
+          this._options.audioConfig!
+        );
+        const metadata = await this._sessionRecorder.start();
+        this.emit('recordingStarted', metadata);
+
+        // Start progress reporting
+        this._recordingProgressInterval = setInterval(() => {
+          if (this._sessionRecorder?.isRecording()) {
+            this.emit('recordingProgress', this._sessionRecorder.getProgress());
+          }
+        }, 5000); // Every 5 seconds
+      }
+
+      // Initialize snippet pipeline if enabled
+      if (this._options.snippets?.enabled) {
+        this._snippetPipeline = new SnippetPipeline(
+          this._options.snippets,
+          this.emitSnippet.bind(this)
+        );
+        await this._snippetPipeline.start();
+      }
+
+      // Initialize session pipeline if enabled
+      if (this._options.sessionTranscript?.enabled) {
+        this._sessionPipeline = new SessionPipeline(
+          this._options.sessionTranscript,
+          this.emitSessionTranscript.bind(this)
+        );
+        await this._sessionPipeline.start();
+      }
+
+      // Start audio streams
       const streamPromises: Promise<void>[] = [];
 
       if (this._options.enableMicrophone) {
@@ -130,6 +172,9 @@ export class AudioTranscriber extends EventEmitter {
       this.emit('started');
 
       console.log('AudioTranscriber started successfully');
+      if (this._snippetPipeline) console.log('  - Snippet pipeline active');
+      if (this._sessionPipeline) console.log('  - Session pipeline active');
+      if (this._sessionRecorder) console.log('  - Recording to disk');
 
     } catch (error) {
       await this.cleanup();
@@ -151,7 +196,7 @@ export class AudioTranscriber extends EventEmitter {
   }
 
   /**
-   * Stop audio transcription
+   * Stop audio transcription and process final session transcript
    */
   async stop(): Promise<void> {
     if (!this._isRunning) {
@@ -168,6 +213,12 @@ export class AudioTranscriber extends EventEmitter {
         this._metricsInterval = undefined;
       }
 
+      // Stop recording progress
+      if (this._recordingProgressInterval) {
+        clearInterval(this._recordingProgressInterval);
+        this._recordingProgressInterval = undefined;
+      }
+
       // Stop audio streams
       const stopPromises: Promise<void>[] = [];
 
@@ -181,16 +232,47 @@ export class AudioTranscriber extends EventEmitter {
         this._systemAudioStream = undefined;
       }
 
-      // Stop all streams in audio capture
       stopPromises.push(this._audioCapture.stopAllStreams());
-
       await Promise.all(stopPromises);
 
-      // Clean up transcription engine
-      await this._transcriptionEngine.destroy();
+      // Stop snippet pipeline
+      if (this._snippetPipeline) {
+        await this._snippetPipeline.stop();
+      }
 
-      // Process any remaining items in queue
-      await this.flushProcessingQueue();
+      // Stop recording and process final session
+      if (this._sessionRecorder) {
+        const metadata = await this._sessionRecorder.stop();
+        this.emit('recordingStopped', metadata);
+
+        // Process final session transcript if session pipeline enabled
+        if (this._sessionPipeline) {
+          console.log('Processing final session transcript...');
+          const source: AudioSource = this._options.enableMicrophone ? 'microphone' : 'system-audio';
+
+          try {
+            await this._sessionPipeline.processFinalSession(metadata, source);
+          } catch (error) {
+            console.error('Failed to process final session:', error);
+            this.emit('error', new TranscriptionError(
+              TranscriptionErrorType.TRANSCRIPTION_ENGINE_ERROR,
+              'Failed to process session transcript',
+              error as Error
+            ));
+          }
+
+          // Handle cleanup
+          if (this._options.recording?.autoCleanup) {
+            console.log('Auto-cleanup enabled, deleting recording...');
+            await this._sessionRecorder.deleteRecording();
+          }
+        }
+      }
+
+      // Stop session pipeline
+      if (this._sessionPipeline) {
+        await this._sessionPipeline.stop();
+      }
 
       this.emit('stopped');
       console.log('AudioTranscriber stopped successfully');
@@ -255,22 +337,24 @@ export class AudioTranscriber extends EventEmitter {
   }
 
   /**
-   * Get transcription engine information
+   * Get current session ID (if recording active)
    */
-  getEngineInfo(): {
-    type: TranscriptionEngineType;
-    isReady: boolean;
-    supportedLanguages: string[];
-    supportsRealTime: boolean;
-    config: EngineConfig;
-  } {
-    return {
-      type: this._transcriptionEngine.getEngineType(),
-      isReady: this._transcriptionEngine.isReady(),
-      supportedLanguages: this._transcriptionEngine.getSupportedLanguages(),
-      supportsRealTime: this._transcriptionEngine.supportsRealTimeStreaming(),
-      config: this._transcriptionEngine.getConfig()
-    };
+  getSessionId(): string | undefined {
+    return this._sessionRecorder?.getSessionId() || undefined;
+  }
+
+  /**
+   * Get path to current recording file (if recording active)
+   */
+  getRecordingPath(): string | undefined {
+    if (!this._sessionRecorder?.isRecording()) {
+      return undefined;
+    }
+    try {
+      return this._sessionRecorder.getMetadata().audioFilePath;
+    } catch {
+      return undefined;
+    }
   }
 
   /**
@@ -278,32 +362,60 @@ export class AudioTranscriber extends EventEmitter {
    */
   public on<K extends keyof AudioTranscriberEvents>(
     event: K,
-    listener: AudioTranscriberEvents[K]
+    listener: (...args: any[]) => void
   ): this {
     return super.on(event, listener);
   }
 
   public emit<K extends keyof AudioTranscriberEvents>(
     event: K,
-    ...args: Parameters<AudioTranscriberEvents[K]>
+    ...args: any[]
   ): boolean {
     return super.emit(event, ...args);
   }
 
-  private createTranscriptionEngine(): TranscriptionEngine {
-    const engineType = this._options.engine?.engine || 'vosk';
+  /**
+   * Emit snippet event (callback for SnippetPipeline)
+   */
+  private emitSnippet(event: SnippetTranscriptionEvent): void {
+    this.emit('snippet', event);
 
-    switch (engineType) {
-      case 'vosk':
-        return new VoskTranscriptionEngine();
-      default:
-        throw new TranscriptionError(
-          TranscriptionErrorType.INVALID_CONFIGURATION,
-          `Unsupported transcription engine: ${engineType}`
-        );
-    }
+    // Update metrics
+    this._metrics.snippetCount++;
+    const avgConf = this._metrics.snippetAverageConfidence;
+    const count = this._metrics.snippetCount;
+    this._metrics.snippetAverageConfidence = ((avgConf * (count - 1)) + event.confidence) / count;
   }
 
+  /**
+   * Emit session transcript event (callback for SessionPipeline)
+   */
+  private emitSessionTranscript(event: SessionTranscriptionEvent): void {
+    console.log('🎯 AUDIOTRANSCRIBER: emitSessionTranscript called');
+    console.log('Event:', {
+      sessionId: event.sessionId,
+      text: event.text.substring(0, 100) + '...',
+      confidence: event.confidence,
+      wordCount: event.metadata.wordCount
+    });
+
+    this.emit('sessionTranscript', event);
+    console.log('✅ AUDIOTRANSCRIBER: sessionTranscript event emitted');
+
+    // Update metrics
+    this._metrics.sessionTranscriptCount++;
+    const avgTime = this._metrics.sessionAverageProcessingTime;
+    const avgConf = this._metrics.sessionAverageConfidence;
+    const count = this._metrics.sessionTranscriptCount;
+    this._metrics.sessionAverageProcessingTime =
+      ((avgTime * (count - 1)) + event.metadata.processingTime) / count;
+    this._metrics.sessionAverageConfidence =
+      ((avgConf * (count - 1)) + event.confidence) / count;
+  }
+
+  /**
+   * Start microphone capture
+   */
   private async startMicrophoneCapture(): Promise<void> {
     try {
       const supports = await this._audioCapture.supportsMicrophoneCapture();
@@ -331,6 +443,9 @@ export class AudioTranscriber extends EventEmitter {
     }
   }
 
+  /**
+   * Start system audio capture
+   */
   private async startSystemAudioCapture(): Promise<void> {
     try {
       const supports = await this._audioCapture.supportsSystemAudioCapture();
@@ -357,26 +472,46 @@ export class AudioTranscriber extends EventEmitter {
     }
   }
 
-  private setupStreamHandlers(stream: AudioStream, source: 'microphone' | 'system-audio'): void {
-    stream.onData(async (audioData: Buffer, timestamp: number) => {
+  /**
+   * Setup audio stream handlers - broadcasts to all active components
+   */
+  private setupStreamHandlers(stream: AudioStream, source: AudioSource): void {
+    let chunkCount = 0;
+    let totalBytes = 0;
+    let lastChunkTime = Date.now();
+
+    stream.onData((audioData: Buffer, timestamp: number) => {
       if (!this._isRunning) return;
 
-      console.log(`Received audio data from ${source}: ${audioData.length} bytes`);
+      chunkCount++;
+      totalBytes += audioData.length;
+      const now = Date.now();
+      const timeSinceLastChunk = now - lastChunkTime;
+      lastChunkTime = now;
+
+      // Log EVERY chunk to understand the flow
+      const first16 = audioData.slice(0, 16);
+      const hex = first16.toString('hex').match(/.{1,2}/g)?.join(' ') || '';
+      console.log(`[AUDIO-STREAM] Chunk ${chunkCount}: ${audioData.length} bytes (total: ${totalBytes} bytes, ${timeSinceLastChunk}ms since last), first 16: ${hex}`);
 
       try {
-        // Add to processing queue
-        this._processingQueue.push({
-          data: audioData,
-          source,
-          timestamp
-        });
+        // Broadcast audio to all active components
 
-        console.log(`Queue size: ${this._processingQueue.length}, Processing: ${this._isProcessing}`);
-
-        // Process queue if not already processing
-        if (!this._isProcessing) {
-          await this.processQueue();
+        // 1. Recording
+        if (this._sessionRecorder?.isRecording()) {
+          this._sessionRecorder.writeChunk(audioData);
         }
+
+        // 2. Snippet pipeline (non-blocking - fire and forget)
+        if (this._snippetPipeline?.isRunning()) {
+          // Process asynchronously without blocking the stream read
+          this._snippetPipeline.processAudio(audioData, source, timestamp).catch(error => {
+            console.error('Snippet pipeline processing error:', error);
+            this._metrics.errorCount++;
+          });
+        }
+
+        // 3. Session pipeline does NOT process during recording (post-session only)
 
       } catch (error) {
         const transcriptionError = new TranscriptionError(
@@ -400,9 +535,9 @@ export class AudioTranscriber extends EventEmitter {
     });
 
     stream.onEnd(() => {
-      console.log(`${source} stream ended`);
+      console.log(`${source} stream ended - received ${chunkCount} chunks, ${totalBytes} total bytes`);
       if (this._isRunning) {
-        // Try to restart the stream if we're still supposed to be running
+        // Try to restart the stream
         setTimeout(() => {
           if (this._isRunning) {
             if (source === 'microphone') {
@@ -420,74 +555,41 @@ export class AudioTranscriber extends EventEmitter {
     });
   }
 
-  private async processQueue(): Promise<void> {
-    if (this._isProcessing) return;
-    this._isProcessing = true;
+  /**
+   * Validate configuration options
+   */
+  private validateOptions(): void {
+    // At least one pipeline must be enabled
+    const snippetsEnabled = this._options.snippets?.enabled;
+    const sessionEnabled = this._options.sessionTranscript?.enabled;
 
-    try {
-      while (this._processingQueue.length > 0 && this._isRunning) {
-        const item = this._processingQueue.shift();
-        if (!item) break;
+    if (!snippetsEnabled && !sessionEnabled) {
+      throw new TranscriptionError(
+        TranscriptionErrorType.INVALID_CONFIGURATION,
+        'At least one pipeline must be enabled (snippets or sessionTranscript)'
+      );
+    }
 
-        const startTime = Date.now();
+    // Session pipeline requires recording
+    if (sessionEnabled && !this._options.recording?.enabled) {
+      throw new TranscriptionError(
+        TranscriptionErrorType.INVALID_CONFIGURATION,
+        'Session transcript pipeline requires recording to be enabled'
+      );
+    }
 
-        console.log(`Processing audio item: ${item.data.length} bytes from ${item.source}`);
-
-        // Process audio with transcription engine
-        const transcriptionEvent = await this._transcriptionEngine.processAudio(
-          item.data,
-          item.source as any,
-          item.timestamp
-        );
-
-        if (transcriptionEvent) {
-          const latency = Date.now() - startTime;
-          this.updateMetrics(latency, transcriptionEvent);
-
-          console.log(`Got transcription: "${transcriptionEvent.text}" (confidence: ${transcriptionEvent.confidence}, partial: ${transcriptionEvent.isPartial})`);
-
-          // Only emit if partial results are enabled or this is a final result
-          if (this._options.enablePartialResults || !transcriptionEvent.isPartial) {
-            // Apply confidence threshold
-            if (transcriptionEvent.confidence >= (this._options.confidenceThreshold || 0.0)) {
-              console.log(`Emitting transcription: "${transcriptionEvent.text}"`);
-              this.emit('transcription', transcriptionEvent);
-            } else {
-              console.log(`Transcription below confidence threshold: ${transcriptionEvent.confidence} < ${this._options.confidenceThreshold}`);
-            }
-          } else {
-            console.log('Skipping partial result (partial results disabled)');
-          }
-        } else {
-          console.log('No transcription event returned');
-        }
-
-        // Prevent blocking the event loop
-        if (this._processingQueue.length > 0) {
-          await new Promise(resolve => setImmediate(resolve));
-        }
-      }
-    } catch (error) {
-      console.error('Error in processing queue:', error);
-    } finally {
-      this._isProcessing = false;
+    // Recording requires output directory
+    if (this._options.recording?.enabled && !this._options.recording.outputDir) {
+      throw new TranscriptionError(
+        TranscriptionErrorType.INVALID_CONFIGURATION,
+        'Recording requires outputDir to be specified'
+      );
     }
   }
 
-  private async flushProcessingQueue(): Promise<void> {
-    const maxWaitTime = 5000; // 5 seconds max wait
-    const startTime = Date.now();
-
-    while (this._processingQueue.length > 0 && (Date.now() - startTime) < maxWaitTime) {
-      await new Promise(resolve => setTimeout(resolve, 100));
-    }
-
-    if (this._processingQueue.length > 0) {
-      console.warn(`Discarded ${this._processingQueue.length} items from processing queue`);
-      this._processingQueue = [];
-    }
-  }
-
+  /**
+   * Setup error handling
+   */
   private setupErrorHandling(): void {
     this.on('error', (error: TranscriptionError) => {
       console.error('AudioTranscriber error:', error.message);
@@ -511,6 +613,9 @@ export class AudioTranscriber extends EventEmitter {
     process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
   }
 
+  /**
+   * Start metrics collection
+   */
   private startMetricsCollection(): void {
     this._metricsInterval = setInterval(() => {
       this.updateSystemMetrics();
@@ -518,42 +623,34 @@ export class AudioTranscriber extends EventEmitter {
     }, 5000); // Update every 5 seconds
   }
 
-  private updateMetrics(latency: number, event: TranscriptionEvent): void {
-    this._metrics.transcriptionCount++;
-
-    if (event.isPartial) {
-      this._metrics.partialResultCount++;
-    }
-
-    // Update running average of latency
-    const count = this._metrics.transcriptionCount;
-    this._metrics.averageLatency =
-      ((this._metrics.averageLatency * (count - 1)) + latency) / count;
-
-    // Update running average of confidence
-    this._metrics.averageConfidence =
-      ((this._metrics.averageConfidence * (count - 1)) + event.confidence) / count;
-
-    this._metrics.lastUpdated = Date.now();
-  }
-
+  /**
+   * Update system metrics
+   */
   private updateSystemMetrics(): void {
     // Basic system metrics
     const memUsage = process.memoryUsage();
     this._metrics.memoryUsage = Math.round(memUsage.heapUsed / 1024 / 1024);
 
     // Estimate CPU usage based on processing activity
-    const processingLoad = Math.min(this._processingQueue.length * 2, 100);
-    this._metrics.cpuUsage = Math.min(processingLoad + (this._metrics.transcriptionCount * 0.01), 100);
+    const snippetLoad = this._snippetPipeline?.isRunning() ? 10 : 0;
+    this._metrics.cpuUsage = Math.min(snippetLoad + (this._metrics.snippetCount * 0.01), 100);
 
     this._metrics.lastUpdated = Date.now();
   }
 
+  /**
+   * Cleanup resources
+   */
   private async cleanup(): Promise<void> {
     try {
       if (this._metricsInterval) {
         clearInterval(this._metricsInterval);
         this._metricsInterval = undefined;
+      }
+
+      if (this._recordingProgressInterval) {
+        clearInterval(this._recordingProgressInterval);
+        this._recordingProgressInterval = undefined;
       }
 
       const cleanupPromises: Promise<any>[] = [];
@@ -570,14 +667,19 @@ export class AudioTranscriber extends EventEmitter {
 
       cleanupPromises.push(this._audioCapture.stopAllStreams());
 
-      if (this._transcriptionEngine.isReady()) {
-        cleanupPromises.push(this._transcriptionEngine.destroy());
+      if (this._snippetPipeline?.isRunning()) {
+        cleanupPromises.push(this._snippetPipeline.stop());
+      }
+
+      if (this._sessionPipeline?.isRunning()) {
+        cleanupPromises.push(this._sessionPipeline.stop());
+      }
+
+      if (this._sessionRecorder?.isRecording()) {
+        cleanupPromises.push(this._sessionRecorder.stop());
       }
 
       await Promise.all(cleanupPromises);
-
-      this._processingQueue = [];
-      this._isProcessing = false;
 
     } catch (error) {
       console.warn('Error during cleanup:', error);

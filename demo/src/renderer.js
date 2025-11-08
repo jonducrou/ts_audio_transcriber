@@ -1,280 +1,392 @@
 const { ipcRenderer } = require('electron');
 
-let isTranscribing = false;
-let transcriptionCount = 0;
+let isRecording = false;
+let snippetCount = 0;
+let sessionCount = 0;
+let currentSessionId = null;
+let recordingStartTime = null;
 
-// DOM elements
-const startBtn = document.getElementById('startBtn');
-const stopBtn = document.getElementById('stopBtn');
-const transcriptionLog = document.getElementById('transcriptionLog');
-const messagesDiv = document.getElementById('messages');
-
-// Initialize app
-document.addEventListener('DOMContentLoaded', () => {
-    console.log('Demo app initialized');
-    getDevices();
-});
-
-// Permission handling
-async function requestPermissions() {
-    try {
-        showMessage('Requesting permissions...', 'info');
-        console.log('Requesting permissions from renderer...');
-
-        const result = await ipcRenderer.invoke('request-permissions');
-        console.log('Permission result received:', result);
-
-        updatePermissionStatus(result);
-
-        // Also show detailed status in console
-        console.log('Microphone status:', result.microphoneStatus);
-        console.log('Screen status:', result.screenStatus);
-
-    } catch (error) {
-        console.error('Error requesting permissions:', error);
-        showMessage('Failed to request permissions: ' + error.message, 'error');
-    }
-}
-
-// Also add a direct test for microphone access
-async function testDirectMicrophoneAccess() {
-    try {
-        showMessage('Testing direct microphone access...', 'info');
-        console.log('Testing direct microphone access...');
-
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        console.log('Direct microphone access granted!');
-        showMessage('Microphone access granted via direct test!', 'info');
-
-        // Stop the stream
-        stream.getTracks().forEach(track => track.stop());
-
-        // Refresh permission status
-        const result = await ipcRenderer.invoke('request-permissions');
-        updatePermissionStatus(result);
-
-    } catch (error) {
-        console.error('Direct microphone test failed:', error);
-        showMessage('Direct microphone test failed: ' + error.message, 'error');
-    }
-}
-
-function updatePermissionStatus(permissions) {
-    const micElement = document.getElementById('mic-permission');
-    const screenElement = document.getElementById('screen-permission');
-
-    micElement.textContent = permissions.microphone ? 'Granted' : 'Denied';
-    micElement.className = `permission-status ${permissions.microphone ? 'permission-granted' : 'permission-denied'}`;
-
-    screenElement.textContent = permissions.screen ? 'Granted' : 'Manual Setup Required';
-    screenElement.className = `permission-status ${permissions.screen ? 'permission-granted' : 'permission-denied'}`;
-
-    // Show specific help messages
-    if (!permissions.microphone) {
-        showMessage('Microphone permission denied. Click "Request Permissions" to try again.', 'error');
-    }
-
-    if (!permissions.screen) {
-        showMessage('Screen recording must be enabled manually: System Preferences > Security & Privacy > Screen Recording > Add this app', 'info');
-    }
-
-    if (permissions.microphone && permissions.screen) {
-        showMessage('All permissions granted! You can now use both microphone and system audio capture.', 'info');
-    }
-}
-
-// Device management
-async function getDevices() {
-    try {
-        const result = await ipcRenderer.invoke('get-devices');
-        if (result.success) {
-            console.log('Available devices:', result.devices);
-            showMessage(`Found ${result.devices.length} audio devices`, 'info');
-        } else {
-            showMessage('Failed to get devices: ' + result.error, 'error');
-        }
-    } catch (error) {
-        console.error('Error getting devices:', error);
-        showMessage('Error getting devices: ' + error.message, 'error');
-    }
-}
-
-// Transcription controls
+// Start transcription with dual-mode configuration
 async function startTranscription() {
-    if (isTranscribing) return;
+    if (isRecording) return;
 
-    const options = {
-        enableMicrophone: document.getElementById('enableMicrophone').checked,
-        enableSystemAudio: document.getElementById('enableSystemAudio').checked,
-        enablePartialResults: document.getElementById('enablePartialResults').checked,
-        confidenceThreshold: parseFloat(document.getElementById('confidenceThreshold').value),
-        language: document.getElementById('language').value,
-        modelPath: document.getElementById('modelPath').value.trim()
+    // Get snippet pipeline config
+    const snippetEngine = document.getElementById('snippetEngine').value;
+    let snippetEngineOptions;
+    if (snippetEngine === 'whisper') {
+        snippetEngineOptions = {
+            modelPath: './models/ggml-base.en.bin'
+        };
+    } else {
+        snippetEngineOptions = {
+            modelPath: './models/vosk-model-en-us-0.22-lgraph'
+        };
+    }
+
+    const snippetConfig = {
+        enabled: document.getElementById('enableSnippets').checked,
+        intervalSeconds: parseInt(document.getElementById('snippetInterval').value) || 15,
+        engine: snippetEngine,
+        confidenceThreshold: parseFloat(document.getElementById('snippetThreshold').value) || 0.4,
+        engineOptions: snippetEngineOptions
     };
 
-    if (!options.enableMicrophone && !options.enableSystemAudio) {
-        showMessage('Please enable at least one audio source', 'error');
+    // Get session pipeline config
+    const sessionEngine = document.getElementById('sessionEngine').value;
+    let sessionEngineOptions;
+    if (sessionEngine === 'whisper') {
+        sessionEngineOptions = {
+            modelPath: './models/ggml-base.en.bin'
+        };
+    } else {
+        sessionEngineOptions = {
+            modelPath: './models/vosk-model-en-us-0.22-lgraph'
+        };
+    }
+
+    const sessionConfig = {
+        enabled: document.getElementById('enableSession').checked,
+        engine: sessionEngine,
+        confidenceThreshold: parseFloat(document.getElementById('sessionThreshold').value) || 0.7,
+        engineOptions: sessionEngineOptions
+    };
+
+    // Recording config
+    const recordingConfig = {
+        enabled: true,
+        outputDir: './recordings',
+        format: 'wav',
+        autoCleanup: document.getElementById('autoCleanup').checked
+    };
+
+    const options = {
+        enableMicrophone: true,
+        enableSystemAudio: false,
+        snippets: snippetConfig,
+        sessionTranscript: sessionConfig,
+        recording: recordingConfig
+    };
+
+    if (!snippetConfig.enabled && !sessionConfig.enabled) {
+        alert('Please enable at least one pipeline (snippets or session)');
         return;
     }
 
     try {
-        startBtn.disabled = true;
-        showMessage('Starting transcription...', 'info');
+        document.getElementById('startBtn').disabled = true;
+        console.log('Starting dual-mode transcription...', options);
 
         const result = await ipcRenderer.invoke('start-transcription', options);
 
         if (result.success) {
-            isTranscribing = true;
+            isRecording = true;
             updateControlsState();
-            showMessage('Transcription started successfully', 'info');
+            console.log('Transcription started successfully');
         } else {
-            showMessage('Failed to start transcription: ' + result.error, 'error');
-            startBtn.disabled = false;
+            alert('Failed to start: ' + result.error);
+            document.getElementById('startBtn').disabled = false;
         }
     } catch (error) {
         console.error('Error starting transcription:', error);
-        showMessage('Error starting transcription: ' + error.message, 'error');
-        startBtn.disabled = false;
+        alert('Error: ' + error.message);
+        document.getElementById('startBtn').disabled = false;
     }
 }
 
 async function stopTranscription() {
-    if (!isTranscribing) return;
+    if (!isRecording) return;
 
     try {
-        stopBtn.disabled = true;
-        showMessage('Stopping transcription...', 'info');
+        document.getElementById('stopBtn').disabled = true;
+        console.log('Stopping transcription...');
 
         const result = await ipcRenderer.invoke('stop-transcription');
 
         if (result.success) {
-            isTranscribing = false;
+            isRecording = false;
             updateControlsState();
-            showMessage('Transcription stopped', 'info');
+            console.log('Transcription stopped');
         } else {
-            showMessage('Failed to stop transcription: ' + result.error, 'error');
-            stopBtn.disabled = false;
+            alert('Failed to stop: ' + result.error);
+            document.getElementById('stopBtn').disabled = false;
         }
     } catch (error) {
         console.error('Error stopping transcription:', error);
-        showMessage('Error stopping transcription: ' + error.message, 'error');
-        stopBtn.disabled = false;
+        alert('Error: ' + error.message);
+        document.getElementById('stopBtn').disabled = false;
     }
 }
 
 function updateControlsState() {
-    const statusIndicator = startBtn.querySelector('.status-indicator');
+    const startBtn = document.getElementById('startBtn');
+    const stopBtn = document.getElementById('stopBtn');
 
-    if (isTranscribing) {
+    if (isRecording) {
         startBtn.disabled = true;
         stopBtn.disabled = false;
-        statusIndicator.className = 'status-indicator status-running';
-        startBtn.innerHTML = '<span class="status-indicator status-running"></span>Transcribing...';
+        startBtn.innerHTML = '<span class="status-indicator status-running"></span>Recording...';
     } else {
         startBtn.disabled = false;
         stopBtn.disabled = true;
-        statusIndicator.className = 'status-indicator status-stopped';
-        startBtn.innerHTML = '<span class="status-indicator status-stopped"></span>Start Transcription';
+        startBtn.innerHTML = '<span class="status-indicator status-stopped"></span>Start Recording';
     }
 }
 
-// UI helpers
-function showMessage(message, type = 'info') {
-    const messageDiv = document.createElement('div');
-    messageDiv.className = `${type}-message`;
-    messageDiv.textContent = message;
+function clearAll() {
+    // Clear snippets
+    const snippetsLog = document.getElementById('snippetsLog');
+    snippetsLog.innerHTML = '<div class="empty-state">⏱️ Live snippets appear here<br>every ~15 seconds during recording</div>';
+    snippetCount = 0;
+    document.getElementById('snippetCount').textContent = '0';
+    document.getElementById('snippetCountBadge').textContent = '0 snippets';
 
-    messagesDiv.appendChild(messageDiv);
+    // Clear session
+    const sessionTranscript = document.getElementById('sessionTranscript');
+    sessionTranscript.innerHTML = '<div class="empty-state">📝 Complete session transcript<br>appears here after stopping</div>';
+    sessionCount = 0;
+    document.getElementById('sessionCount').textContent = '0';
+    document.getElementById('sessionStatus').innerHTML = '';
 
-    // Auto-remove after 5 seconds
-    setTimeout(() => {
-        if (messageDiv.parentNode) {
-            messageDiv.parentNode.removeChild(messageDiv);
-        }
-    }, 5000);
+    // Clear recording info
+    document.getElementById('recordingInfo').innerHTML = '';
 
-    // Keep only last 3 messages
-    while (messagesDiv.children.length > 3) {
-        messagesDiv.removeChild(messagesDiv.firstChild);
-    }
+    console.log('Cleared all displays');
 }
 
-function clearTranscriptions() {
-    transcriptionLog.innerHTML = '<div class="info-message">Transcription log cleared. Ready for new transcriptions.</div>';
-    transcriptionCount = 0;
-}
+function addSnippet(event) {
+    const snippetsLog = document.getElementById('snippetsLog');
 
-function addTranscription(event) {
-    // Remove initial message if present
-    const initialMessage = transcriptionLog.querySelector('.info-message');
-    if (initialMessage && transcriptionCount === 0) {
-        transcriptionLog.removeChild(initialMessage);
+    // Remove empty state on first snippet
+    const emptyState = snippetsLog.querySelector('.empty-state');
+    if (emptyState) {
+        snippetsLog.innerHTML = '';
     }
 
     const entry = document.createElement('div');
-    entry.className = `transcription-entry ${event.source}${event.isPartial ? ' partial' : ''}`;
+    entry.className = 'snippet-entry';
 
     const meta = document.createElement('div');
-    meta.className = 'transcription-meta';
+    meta.className = 'snippet-meta';
+
     const timestamp = new Date(event.timestamp).toLocaleTimeString();
     const confidencePercent = (event.confidence * 100).toFixed(1);
-    const status = event.isPartial ? 'partial' : 'final';
-    meta.textContent = `[${timestamp}] ${event.source} | ${confidencePercent}% confidence | ${status}`;
+
+    const leftMeta = document.createElement('span');
+    leftMeta.innerHTML = `<span class="badge badge-${event.engine}">${event.engine}</span> #${event.snippetIndex} @ ${timestamp}`;
+
+    const rightMeta = document.createElement('span');
+    rightMeta.innerHTML = `<span class="badge badge-confidence-${getConfidenceBadge(event.confidence)}">${confidencePercent}%</span>`;
+
+    meta.appendChild(leftMeta);
+    meta.appendChild(rightMeta);
 
     const text = document.createElement('div');
-    text.className = 'transcription-text';
+    text.className = 'snippet-text';
     text.textContent = event.text;
 
     entry.appendChild(meta);
     entry.appendChild(text);
-    transcriptionLog.appendChild(entry);
+    snippetsLog.appendChild(entry);
 
     // Auto-scroll to bottom
-    transcriptionLog.scrollTop = transcriptionLog.scrollHeight;
+    snippetsLog.scrollTop = snippetsLog.scrollHeight;
 
-    transcriptionCount++;
+    snippetCount++;
+    document.getElementById('snippetCount').textContent = snippetCount.toString();
+    document.getElementById('snippetCountBadge').textContent = `${snippetCount} snippets`;
 
-    // Keep only last 100 entries for performance
-    while (transcriptionLog.children.length > 100) {
-        transcriptionLog.removeChild(transcriptionLog.firstChild);
+    // Keep only last 50 snippets for performance
+    while (snippetsLog.children.length > 50) {
+        snippetsLog.removeChild(snippetsLog.firstChild);
     }
 }
 
-function updateMetrics(metrics) {
-    document.getElementById('latency').textContent = `${Math.round(metrics.averageLatency)}ms`;
-    document.getElementById('transcriptions').textContent = metrics.transcriptionCount.toString();
-    document.getElementById('confidence').textContent = `${Math.round(metrics.averageConfidence * 100)}%`;
-    document.getElementById('memory').textContent = `${metrics.memoryUsage}MB`;
+function displaySessionTranscript(event) {
+    const sessionTranscript = document.getElementById('sessionTranscript');
+    sessionTranscript.innerHTML = '';
+
+    // Add metadata header
+    const metaDiv = document.createElement('div');
+    metaDiv.className = 'session-meta';
+
+    const duration = (event.metadata.duration / 1000).toFixed(1);
+    const processingTime = (event.metadata.processingTime / 1000).toFixed(1);
+    const confidencePercent = (event.confidence * 100).toFixed(1);
+
+    metaDiv.innerHTML = `
+        <div style="display: flex; justify-content: space-between; margin-bottom: 10px;">
+            <strong>Session: ${event.sessionId}</strong>
+            <span class="badge badge-${event.engine}">${event.engine}</span>
+        </div>
+        <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; font-size: 11px;">
+            <div><strong>Duration:</strong> ${duration}s</div>
+            <div><strong>Words:</strong> ${event.metadata.wordCount}</div>
+            <div><strong>Processing:</strong> ${processingTime}s</div>
+            <div><strong>Confidence:</strong> <span class="badge badge-confidence-${getConfidenceBadge(event.confidence)}">${confidencePercent}%</span></div>
+        </div>
+    `;
+
+    const textDiv = document.createElement('div');
+    textDiv.className = 'session-text';
+    textDiv.textContent = event.text;
+
+    sessionTranscript.appendChild(metaDiv);
+    sessionTranscript.appendChild(textDiv);
+
+    sessionCount++;
+    document.getElementById('sessionCount').textContent = sessionCount.toString();
 }
 
-// IPC event listeners
-ipcRenderer.on('permissions-status', (event, permissions) => {
-    updatePermissionStatus(permissions);
+function updateRecordingStatus(metadata) {
+    const recordingInfo = document.getElementById('recordingInfo');
+    const sessionStatus = document.getElementById('sessionStatus');
+
+    if (metadata) {
+        currentSessionId = metadata.sessionId;
+        recordingStartTime = metadata.startTime;
+
+        const infoHtml = `
+            <div class="recording-info">
+                ⏺️ Recording: ${metadata.sessionId}<br>
+                File: ${metadata.audioFilePath}
+            </div>
+        `;
+        recordingInfo.innerHTML = infoHtml;
+
+        const statusHtml = `
+            <div class="session-status">
+                <div class="session-status-item">
+                    <span>Status:</span>
+                    <span><span class="status-indicator status-running"></span>Recording</span>
+                </div>
+                <div class="session-status-item">
+                    <span>Session:</span>
+                    <span>${metadata.sessionId}</span>
+                </div>
+            </div>
+        `;
+        sessionStatus.innerHTML = statusHtml;
+    }
+}
+
+function clearRecordingStatus(metadata) {
+    const recordingInfo = document.getElementById('recordingInfo');
+    const sessionStatus = document.getElementById('sessionStatus');
+
+    if (metadata) {
+        const duration = (metadata.duration / 1000).toFixed(1);
+        const fileSize = (metadata.fileSize / 1024 / 1024).toFixed(2);
+
+        const infoHtml = `
+            <div class="processing-info">
+                ⏹️ Stopped. Processing session...<br>
+                Duration: ${duration}s | Size: ${fileSize}MB
+            </div>
+        `;
+        recordingInfo.innerHTML = infoHtml;
+
+        const statusHtml = `
+            <div class="session-status">
+                <div class="session-status-item">
+                    <span>Status:</span>
+                    <span><span class="status-indicator status-stopped"></span>Processing</span>
+                </div>
+                <div class="session-status-item">
+                    <span>Session:</span>
+                    <span>${metadata.sessionId}</span>
+                </div>
+            </div>
+        `;
+        sessionStatus.innerHTML = statusHtml;
+    }
+
+    currentSessionId = null;
+    recordingStartTime = null;
+}
+
+function updateRecordingProgress(progress) {
+    // Update live duration and file size metrics
+    const duration = (progress.duration / 1000).toFixed(0);
+    const fileSize = (progress.fileSize / 1024 / 1024).toFixed(2);
+
+    document.getElementById('memory').textContent = `${fileSize}MB`;
+
+    // Could also update a duration display if we add one to the UI
+}
+
+function getConfidenceBadge(confidence) {
+    if (confidence >= 0.7) return 'high';
+    if (confidence >= 0.4) return 'med';
+    return 'low';
+}
+
+function updateMetrics(metrics) {
+    // Update CPU metric if available
+    if (metrics.cpuUsage !== undefined) {
+        document.getElementById('cpu').textContent = `${metrics.cpuUsage}%`;
+    }
+}
+
+// IPC Event Listeners
+ipcRenderer.on('snippet', (event, snippetEvent) => {
+    console.log('🎯 RENDERER: Received snippet event:', snippetEvent);
+    try {
+        addSnippet(snippetEvent);
+        console.log('✅ RENDERER: Snippet added to UI');
+    } catch (err) {
+        console.error('❌ RENDERER: Error adding snippet:', err);
+    }
 });
 
-ipcRenderer.on('transcription', (event, transcriptionEvent) => {
-    addTranscription(transcriptionEvent);
+ipcRenderer.on('sessionTranscript', (event, sessionEvent) => {
+    console.log('🎯 RENDERER: Received session transcript event:', sessionEvent);
+    try {
+        displaySessionTranscript(sessionEvent);
+        console.log('✅ RENDERER: Session transcript displayed');
+
+        // Clear processing indicator
+        const recordingInfo = document.getElementById('recordingInfo');
+        recordingInfo.innerHTML = '';
+    } catch (err) {
+        console.error('❌ RENDERER: Error displaying session transcript:', err);
+    }
+});
+
+ipcRenderer.on('recordingStarted', (event, metadata) => {
+    console.log('Recording started:', metadata);
+    updateRecordingStatus(metadata);
+});
+
+ipcRenderer.on('recordingStopped', (event, metadata) => {
+    console.log('Recording stopped:', metadata);
+    clearRecordingStatus(metadata);
+});
+
+ipcRenderer.on('recordingProgress', (event, progress) => {
+    updateRecordingProgress(progress);
 });
 
 ipcRenderer.on('transcription-error', (event, error) => {
-    showMessage(`Transcription error: ${error.message}`, 'error');
     console.error('Transcription error:', error);
+    alert(`Error: ${error.message}`);
 });
 
 ipcRenderer.on('transcription-started', () => {
-    isTranscribing = true;
-    updateControlsState();
-    showMessage('Transcription engine started', 'info');
+    console.log('Transcription engine started');
 });
 
 ipcRenderer.on('transcription-stopped', () => {
-    isTranscribing = false;
-    updateControlsState();
-    showMessage('Transcription engine stopped', 'info');
+    console.log('Transcription engine stopped');
 });
 
 ipcRenderer.on('metrics-update', (event, metrics) => {
     updateMetrics(metrics);
+});
+
+// Initialize on load
+document.addEventListener('DOMContentLoaded', () => {
+    console.log('Dual-mode demo app initialized');
+    updateControlsState();
 });
 
 // Keyboard shortcuts
@@ -283,7 +395,7 @@ document.addEventListener('keydown', (event) => {
         switch (event.key) {
             case 's':
                 event.preventDefault();
-                if (isTranscribing) {
+                if (isRecording) {
                     stopTranscription();
                 } else {
                     startTranscription();
@@ -291,16 +403,8 @@ document.addEventListener('keydown', (event) => {
                 break;
             case 'k':
                 event.preventDefault();
-                clearTranscriptions();
+                clearAll();
                 break;
         }
     }
-});
-
-// Initialize metrics display
-updateMetrics({
-    averageLatency: 0,
-    transcriptionCount: 0,
-    averageConfidence: 0,
-    memoryUsage: 0
 });
