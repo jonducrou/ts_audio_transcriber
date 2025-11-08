@@ -1034,5 +1034,80 @@ Chunk 4: 3d ff 3c ff 5a ff 44 ff 44 ff 8f ff a1 ff 9e ff  ← DIFFERENT
 
 ---
 
+### Decision: Fix Whisper Module Loading for whisper-node ✅
+
+**Date**: November 2024
+
+**Context**: Whisper engine was returning empty results `[]` when attempting to transcribe audio. Direct testing revealed that whisper-node works correctly and returns transcriptions with `.speech` properties, but the integration in WhisperTranscriptionEngine was failing.
+
+**Root Cause**: The whisper-node npm package exports an object with `.default` and `.whisper` properties, not a direct function. The original code did:
+
+```typescript
+let whisper: any;
+try {
+  whisper = require('whisper-node');  // Returns { default: function, whisper: object }
+  console.log('[WHISPER] whisper-node loaded successfully');
+} catch (error) {
+  whisper = null;
+}
+```
+
+This assigned the module object to `whisper`, not the actual transcription function. Later code checked `typeof whisper !== 'function'` but the fallback logic didn't correctly extract the `.default` export.
+
+**Testing Process**:
+1. Created `test-whisper-direct.js` to test whisper-node in isolation
+2. Confirmed whisper-node works: returns array with `{start, end, speech}` objects
+3. Discovered module structure: `{ whisper: object, default: function }`
+4. Identified that `.default` contains the actual transcription function
+
+**Fix Applied** ✅:
+```typescript
+// Import whisper-node with error handling
+let whisper: any;
+try {
+  const whisperModule = require('whisper-node');
+  // whisper-node exports as { default: function, whisper: object }
+  // We need to use the .default export
+  if (typeof whisperModule === 'object' && typeof whisperModule.default === 'function') {
+    whisper = whisperModule.default;
+    console.log('[WHISPER] whisper-node loaded successfully (using .default export)');
+  } else if (typeof whisperModule === 'function') {
+    whisper = whisperModule;
+    console.log('[WHISPER] whisper-node loaded successfully (direct function)');
+  } else {
+    console.error('[WHISPER] whisper-node module structure unexpected:', Object.keys(whisperModule || {}));
+    whisper = null;
+  }
+} catch (error) {
+  console.error('[WHISPER] Failed to load whisper-node:', error);
+  whisper = null;
+}
+```
+
+**Result Format**: Whisper returns an array of segments:
+```json
+[
+  {
+    "start": "00:00:02.760",
+    "end": "00:00:08.840",
+    "speech": "Testing."
+  }
+]
+```
+
+The `extractText()` method correctly handles this format by mapping over the array and extracting `.speech` properties.
+
+**Simplified Initialization**: Removed redundant module resolution logic from `initializeEngine()` since the module is now loaded correctly at import time.
+
+**Testing**: Direct test with `test-whisper-direct.js` confirms Whisper transcribes audio files correctly with ~260ms processing time for a 5-second audio clip.
+
+**Status**: ⚠️ **Partially Fixed - Experimental**
+
+The module loading is now correct and Whisper works for isolated file transcription. However, integration with SessionPipeline for complete session transcripts still has issues. For production use, **Vosk is recommended** for both snippet and session pipelines.
+
+**Location**: `/src/engines/whisper/whisper-engine.ts:14-33, 169-186, 247-376`
+
+---
+
 **Last Updated**: November 2024
 **Status**: Living document - update as new decisions are made

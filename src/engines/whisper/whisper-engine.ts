@@ -14,8 +14,19 @@ import {
 // Import whisper-node with error handling
 let whisper: any;
 try {
-  whisper = require('whisper-node');
-  console.log('[WHISPER] whisper-node loaded successfully');
+  const whisperModule = require('whisper-node');
+  // whisper-node exports as { default: function, whisper: object }
+  // We need to use the .default export
+  if (typeof whisperModule === 'object' && typeof whisperModule.default === 'function') {
+    whisper = whisperModule.default;
+    console.log('[WHISPER] whisper-node loaded successfully (using .default export)');
+  } else if (typeof whisperModule === 'function') {
+    whisper = whisperModule;
+    console.log('[WHISPER] whisper-node loaded successfully (direct function)');
+  } else {
+    console.error('[WHISPER] whisper-node module structure unexpected:', Object.keys(whisperModule || {}));
+    whisper = null;
+  }
 } catch (error) {
   console.error('[WHISPER] Failed to load whisper-node:', error);
   whisper = null;
@@ -158,54 +169,21 @@ export class WhisperTranscriptionEngine extends BaseTranscriptionEngine {
   protected async initializeEngine(config: EngineConfig): Promise<void> {
     try {
       // Check if whisper-node module loaded properly
-      if (!whisper) {
+      if (!whisper || typeof whisper !== 'function') {
         throw new TranscriptionError(
           TranscriptionErrorType.ENGINE_INITIALIZATION_FAILED,
-          'Whisper engine is not fully compatible with Electron yet. Please use the Vosk engine for now.',
+          'Whisper engine failed to load. The whisper-node module may not be properly installed.',
           undefined,
           {
             modelPath: config.modelPath,
             language: config.language,
-            recommendation: 'Use the Vosk engine which provides excellent performance and stability'
+            whisperType: typeof whisper,
+            solution: 'Try running: npm install whisper-node && cd node_modules/whisper-node && npm run postinstall'
           }
         );
       }
 
-      console.log('[WHISPER] Debug - whisper module type:', typeof whisper);
-      console.log('[WHISPER] Debug - whisper module keys:', Object.keys(whisper || {}));
-      console.log('[WHISPER] Debug - whisper module:', whisper);
-
-      if (typeof whisper !== 'function') {
-        // Check if whisper has a default export or other callable property
-        const possibleCallables = ['default', 'Whisper', 'transcribe', 'create'];
-        let callable = null;
-
-        for (const prop of possibleCallables) {
-          if (whisper && typeof whisper[prop] === 'function') {
-            console.log(`[WHISPER] Found callable at whisper.${prop}`);
-            callable = whisper[prop];
-            break;
-          }
-        }
-
-        if (callable) {
-          // Use the found callable instead
-          whisper = callable;
-        } else {
-          throw new TranscriptionError(
-            TranscriptionErrorType.ENGINE_INITIALIZATION_FAILED,
-            `whisper-node module is not a function (type: ${typeof whisper}). Available properties: ${Object.keys(whisper || {}).join(', ')}`,
-            undefined,
-            {
-              modelPath: config.modelPath,
-              language: config.language,
-              whisperType: typeof whisper,
-              whisperKeys: Object.keys(whisper || {}),
-              solution: 'Ensure whisper.cpp is compiled: cd node_modules/whisper-node/lib/whisper.cpp && make'
-            }
-          );
-        }
-      }
+      console.log('[WHISPER] Whisper function ready, type:', typeof whisper);
 
       // Determine model path
       this.modelPath = await this.resolveModelPath(config);
@@ -287,63 +265,110 @@ export class WhisperTranscriptionEngine extends BaseTranscriptionEngine {
     }
 
     try {
-      // Initialize buffer start time if this is the first chunk
-      if (this.bufferStartTime === 0) {
-        this.bufferStartTime = timestamp;
-      }
+      // Calculate audio duration (16-bit PCM @ 16kHz)
+      const audioDurationMs = (audioData.length / 2 / this.sampleRate) * 1000;
 
-      // Accumulate audio into 5-second chunks with zero overlap
-      this.audioBuffer = Buffer.concat([this.audioBuffer, audioData]);
+      // For SessionPipeline (large complete buffers), process entire audio at once
+      // For SnippetPipeline (streaming chunks), accumulate to 5-second chunks
+      const isCompleteSession = audioDurationMs > 10000; // > 10 seconds indicates complete session
 
-      // Calculate buffer duration (16-bit PCM @ 16kHz)
-      const bufferDurationMs = (this.audioBuffer.length / 2 / this.sampleRate) * 1000;
-      const targetChunkMs = 5000; // 5 seconds
+      if (isCompleteSession) {
+        // SessionPipeline mode: Process entire buffer without chunking
+        console.log(`[WHISPER] SessionPipeline mode: Processing complete ${audioDurationMs.toFixed(0)}ms audio (${audioData.length} bytes)`);
+        const processingChunk = audioData;
 
-      // Process when we have 5 seconds of audio
-      if (bufferDurationMs < targetChunkMs) {
-        console.log(`[WHISPER] Buffer: ${this.audioBuffer.length} bytes (${bufferDurationMs.toFixed(0)}ms), waiting for ${targetChunkMs}ms`);
-        return null; // Not ready to process yet
-      }
+        // Save audio to temporary file (Whisper requires file input)
+        const tempAudioPath = await this.saveAudioToTempFile(processingChunk);
 
-      // No overlap - just clean 5-second chunks
-      const processingChunk = Buffer.from(this.audioBuffer);
-      console.log(`[WHISPER] Processing clean 5-second chunk: ${processingChunk.length} bytes (${bufferDurationMs.toFixed(0)}ms)`);
+        try {
+          // Transcribe with Whisper
+          const result = await this.whisperInstance.transcribe(tempAudioPath);
+          console.log(`[WHISPER] Raw result:`, JSON.stringify(result, null, 2));
 
-      // Reset buffer for next chunk
-      this.audioBuffer = Buffer.alloc(0);
-      this.bufferStartTime = timestamp;
+          // Parse result
+          const transcriptionText = this.extractText(result);
+          const confidence = this.extractConfidence(result);
 
-      // Save audio to temporary file (Whisper requires file input)
-      const tempAudioPath = await this.saveAudioToTempFile(processingChunk);
+          if (!transcriptionText || transcriptionText.trim().length === 0) {
+            console.log('[WHISPER] No transcription text found');
+            return null;
+          }
 
-      try {
-        // Transcribe with Whisper
-        const result = await this.whisperInstance.transcribe(tempAudioPath);
-        console.log(`[WHISPER] Raw result:`, JSON.stringify(result, null, 2));
+          console.log(`[WHISPER] Transcription: "${transcriptionText}" (confidence: ${confidence})`);
 
-        // Parse result
-        const transcriptionText = this.extractText(result);
-        const confidence = this.extractConfidence(result);
+          return {
+            text: transcriptionText.trim(),
+            source,
+            confidence,
+            timestamp,
+            isPartial: false, // Whisper provides complete results
+            engine: this.getEngineType()
+          };
 
-        if (!transcriptionText || transcriptionText.trim().length === 0) {
-          console.log('[WHISPER] No transcription text found');
-          return null;
+        } finally {
+          // Clean up temp file
+          await this.cleanupTempFile(tempAudioPath);
+        }
+      } else {
+        // SnippetPipeline mode: Accumulate into 5-second chunks
+        // Initialize buffer start time if this is the first chunk
+        if (this.bufferStartTime === 0) {
+          this.bufferStartTime = timestamp;
         }
 
-        console.log(`[WHISPER] Transcription: "${transcriptionText}" (confidence: ${confidence})`);
+        // Accumulate audio into 5-second chunks
+        this.audioBuffer = Buffer.concat([this.audioBuffer, audioData]);
 
-        return {
-          text: transcriptionText.trim(),
-          source,
-          confidence,
-          timestamp,
-          isPartial: false, // Whisper provides complete results
-          engine: this.getEngineType()
-        };
+        // Calculate buffer duration
+        const bufferDurationMs = (this.audioBuffer.length / 2 / this.sampleRate) * 1000;
+        const targetChunkMs = 5000; // 5 seconds
 
-      } finally {
-        // Clean up temp file
-        await this.cleanupTempFile(tempAudioPath);
+        // Process when we have 5 seconds of audio
+        if (bufferDurationMs < targetChunkMs) {
+          console.log(`[WHISPER] SnippetPipeline: Buffer ${this.audioBuffer.length} bytes (${bufferDurationMs.toFixed(0)}ms), waiting for ${targetChunkMs}ms`);
+          return null; // Not ready to process yet
+        }
+
+        // Process 5-second chunk
+        const processingChunk = Buffer.from(this.audioBuffer);
+        console.log(`[WHISPER] SnippetPipeline: Processing 5-second chunk ${processingChunk.length} bytes (${bufferDurationMs.toFixed(0)}ms)`);
+
+        // Reset buffer for next chunk
+        this.audioBuffer = Buffer.alloc(0);
+        this.bufferStartTime = timestamp;
+
+        // Save audio to temporary file
+        const tempAudioPath = await this.saveAudioToTempFile(processingChunk);
+
+        try {
+          // Transcribe with Whisper
+          const result = await this.whisperInstance.transcribe(tempAudioPath);
+          console.log(`[WHISPER] Raw result:`, JSON.stringify(result, null, 2));
+
+          // Parse result
+          const transcriptionText = this.extractText(result);
+          const confidence = this.extractConfidence(result);
+
+          if (!transcriptionText || transcriptionText.trim().length === 0) {
+            console.log('[WHISPER] No transcription text found');
+            return null;
+          }
+
+          console.log(`[WHISPER] Transcription: "${transcriptionText}" (confidence: ${confidence})`);
+
+          return {
+            text: transcriptionText.trim(),
+            source,
+            confidence,
+            timestamp,
+            isPartial: true, // Snippet mode produces partial results
+            engine: this.getEngineType()
+          };
+
+        } finally {
+          // Clean up temp file
+          await this.cleanupTempFile(tempAudioPath);
+        }
       }
 
     } catch (error) {

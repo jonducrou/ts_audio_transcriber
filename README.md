@@ -22,8 +22,8 @@ A comprehensive **open source** TypeScript library for **dual-mode audio transcr
 - 🆓 **Completely Free** - No API keys, no usage limits, no paid services
 
 ### Supported Engines
-- **Vosk** - Fast real-time transcription, 20+ languages, low resource usage
-- **Whisper** - High accuracy, excellent for session transcripts, state-of-the-art model
+- **Vosk** - Fast real-time transcription, 20+ languages, low resource usage ✅ **Recommended**
+- **Whisper** - High accuracy model ⚠️ **Experimental** (still in development, use Vosk for production)
 
 ### Developer Experience
 - 🎯 **TypeScript Native** - Full type safety and modern development experience
@@ -590,8 +590,9 @@ MIT License - see [LICENSE](LICENSE) file for details.
 
 ## 🙏 Acknowledgments
 
-- [Vosk](https://alphacephei.com/vosk/) for the excellent open source speech recognition engine
-- [ScreenCaptureKit](https://developer.apple.com/documentation/screencapturekit/) for system audio capture capabilities
+- [Vosk](https://alphacephei.com/vosk/) for the excellent open source speech recognition engine (Apache 2.0 License)
+- [Whisper.cpp](https://github.com/ggerganov/whisper.cpp) and [OpenAI Whisper](https://github.com/openai/whisper) for state-of-the-art speech recognition models (MIT License)
+- [ScreenCaptureKit](https://developer.apple.com/documentation/screencapturekit/) for system audio capture capabilities on macOS
 - The open source community for making privacy-focused AI accessible to everyone
 
 ---

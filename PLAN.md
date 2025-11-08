@@ -409,7 +409,7 @@ ts-audio-transcriber/
 - ✅ Removed sox `rate` effect that was buffering audio
 - ✅ Audio now streams continuously with unique chunks
 - ✅ Vosk transcription working perfectly with no repeating words
-- ⚠️ Whisper returning empty results (TODO: investigate)
+- ⚠️ Whisper module loading fixed but integration still experimental (use Vosk for production)
 
 **Breaking Changes**:
 - ✅ Old 'transcription' event removed
@@ -418,11 +418,11 @@ ts-audio-transcriber/
 
 ## Next Steps
 
-1. **Fix Whisper Engine** (TODO)
-   - Investigate why Whisper returns empty results
-   - Test with different audio formats/parameters
-   - Verify Whisper model is correct
-   - Consider alternative whisper-node configuration
+1. **Whisper Integration** ⚠️
+   - Module loading fixed - whisper-node now uses .default export
+   - Direct testing confirms Whisper transcribes isolated files correctly
+   - Session pipeline integration still has issues - needs further investigation
+   - **Recommendation**: Use Vosk for both snippets and sessions (production-ready)
 
 2. **Future Enhancements**
    - Add progressive session transcription mode
@@ -439,3 +439,5 @@ ts-audio-transcriber/
    - Investigate streaming Whisper processing
 
 **System is production-ready with Vosk engine!** 🚀
+
+**Note**: Whisper integration is experimental. For production use, configure both snippet and session pipelines to use Vosk.
