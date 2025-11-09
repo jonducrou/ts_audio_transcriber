@@ -53,7 +53,7 @@ async function runTest() {
     snippets: {
       enabled: true,
       engine: 'vosk',
-      interval: 5000, // 5 second snippets for faster testing
+      intervalSeconds: 5, // 5 second snippets for faster testing
       engineOptions: {
         modelPath: VOSK_MODEL_PATH
       }
