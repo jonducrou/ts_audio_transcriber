@@ -1,13 +1,13 @@
 # TypeScript Audio Transcriber
 
-A comprehensive **open source** TypeScript library for **dual-mode audio transcription** on macOS, designed specifically for note-taking applications. Provides both real-time 15-second snippets for live decision-making AND complete high-accuracy session transcripts for 1+ hour recordings using Vosk and Whisper speech recognition engines.
+A comprehensive **open source** TypeScript library for **dual-mode audio transcription** on macOS, designed specifically for note-taking applications. Provides both real-time 15-second snippets for live decision-making AND complete high-accuracy session transcripts for 1+ hour recordings using the Vosk speech recognition engine.
 
 ## ✨ Features
 
 ### Dual-Mode Transcription
 - ⚡ **15-Second Live Snippets** - Real-time events every 15 seconds during recording (< 1s latency)
 - 📝 **Complete Session Transcripts** - High-accuracy transcription of entire 1+ hour sessions after stopping
-- 🎯 **Multiple Engines** - Choose between Vosk (fast) or Whisper (accurate)
+- 🎯 **Vosk Engine** - Fast, accurate, and reliable speech recognition for all transcription modes
 - 🔄 **Simultaneous Operation** - Both modes run in parallel without interference
 
 ### Audio Capture
@@ -16,14 +16,13 @@ A comprehensive **open source** TypeScript library for **dual-mode audio transcr
 - 📱 **Source Detection** - Clearly identify whether transcription comes from mic or system audio
 
 ### Privacy & Performance
-- 🔒 **Privacy-First** - All processing happens on-device (Vosk, Whisper)
+- 🔒 **Privacy-First** - All processing happens on-device with Vosk
 - 💾 **Session Recording** - Optional audio recording to disk for post-processing
 - 📊 **Performance Metrics** - Built-in monitoring for latency, memory usage, and errors
 - 🆓 **Completely Free** - No API keys, no usage limits, no paid services
 
-### Supported Engines
-- **Vosk** - Fast real-time transcription, 20+ languages, low resource usage ✅ **Recommended**
-- **Whisper** - High accuracy model ⚠️ **Experimental** (still in development, use Vosk for production)
+### Transcription Engine
+- **Vosk** - Fast real-time transcription, 20+ languages, low resource usage, production-ready ✅
 
 ### Developer Experience
 - 🎯 **TypeScript Native** - Full type safety and modern development experience
@@ -53,7 +52,7 @@ A comprehensive **open source** TypeScript library for **dual-mode audio transcr
 ┌────────┐  ┌─────────┐ ┌────────────┐ ┌─────────────┐
 │Session │  │ Snippet │ │  Session   │ │             │
 │Recorder│  │Pipeline │ │  Pipeline  │ │   Events    │
-│(Disk)  │  │ Vosk    │ │  Whisper   │ │             │
+│(Disk)  │  │ Vosk    │ │  Vosk      │ │             │
 └────┬───┘  │ 15-sec  │ │ Post-Stop  │ │ • snippet   │
      │      └────┬────┘ └─────┬──────┘ │ • session   │
      │           │            │        │ • recording │
@@ -125,7 +124,7 @@ const transcriber = new AudioTranscriber({
   // Complete session transcript after stopping
   sessionTranscript: {
     enabled: true,
-    engine: 'whisper',
+    engine: 'vosk',
     confidenceThreshold: 0.7,
     engineOptions: {
       modelPath: './models/ggml-base.en.bin'
@@ -241,7 +240,7 @@ const transcriber = new AudioTranscriber({
 
   sessionTranscript: {
     enabled: true,
-    engine: 'whisper',
+    engine: 'vosk',
     engineOptions: {
       modelPath: './models/ggml-base.en.bin'
     }
@@ -296,7 +295,7 @@ const transcriber = new AudioTranscriber({
   // Session pipeline
   sessionTranscript: {
     enabled: true,
-    engine: 'whisper',
+    engine: 'vosk',
     confidenceThreshold: 0.7,
     engineOptions: {
       modelPath: './models/ggml-large.bin',  // Larger model for better accuracy
@@ -409,14 +408,14 @@ interface TranscriberOptions {
   snippets?: {
     enabled: boolean;
     intervalSeconds?: number;        // Default: 15
-    engine: 'vosk' | 'whisper';
+    engine: 'vosk';
     confidenceThreshold?: number;    // Default: 0.4
     engineOptions?: Record<string, any>;
   };
 
   sessionTranscript?: {
     enabled: boolean;
-    engine: 'vosk' | 'whisper';
+    engine: 'vosk';
     confidenceThreshold?: number;    // Default: 0.7
     engineOptions?: Record<string, any>;
   };
@@ -584,9 +583,9 @@ process.env.DEBUG = 'audio-transcriber:*';
 
 ## 🆚 Comparison with Other Solutions
 
-| Feature | ts-audio-transcriber | Picovoice Cheetah | Google Speech-to-Text | OpenAI Whisper |
-|---------|---------------------|-------------------|----------------------|----------------|
-| **Cost** | Free | Paid | Paid | Free (self-hosted) |
+| Feature | ts-audio-transcriber | Picovoice Cheetah | Google Speech-to-Text | Vosk |
+|---------|---------------------|-------------------|----------------------|------|
+| **Cost** | Free | Paid | Paid | Free (open source) |
 | **Privacy** | On-device | On-device | Cloud | On-device |
 | **Real-time** | ✅ Yes | ✅ Yes | ✅ Yes | ❌ Batch-oriented |
 | **macOS System Audio** | ✅ Yes | ❌ No | ❌ No | ❌ No |
@@ -610,7 +609,6 @@ MIT License - see [LICENSE](LICENSE) file for details.
 ## 🙏 Acknowledgments
 
 - [Vosk](https://alphacephei.com/vosk/) for the excellent open source speech recognition engine (Apache 2.0 License)
-- [Whisper.cpp](https://github.com/ggerganov/whisper.cpp) and [OpenAI Whisper](https://github.com/openai/whisper) for state-of-the-art speech recognition models (MIT License)
 - [ScreenCaptureKit](https://developer.apple.com/documentation/screencapturekit/) for system audio capture capabilities on macOS
 - The open source community for making privacy-focused AI accessible to everyone
 

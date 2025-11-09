@@ -24,7 +24,7 @@ import { SessionPipeline } from './session-pipeline';
  *
  * Provides two simultaneous transcription modes:
  * 1. Snippet Pipeline: Real-time 15-second chunks (Vosk, low latency)
- * 2. Session Pipeline: Complete session transcript (Whisper, high accuracy)
+ * 2. Session Pipeline: Complete session transcript (Vosk, high accuracy)
  */
 export class AudioTranscriber extends EventEmitter {
   private _audioCapture: AudioCapture;

@@ -10,7 +10,7 @@ export type AudioSource = 'microphone' | 'system-audio';
 /**
  * Available transcription engines
  */
-export type TranscriptionEngineType = 'vosk' | 'whisper';
+export type TranscriptionEngineType = 'vosk';
 
 /**
  * Transcription event containing the transcribed text and metadata (LEGACY - deprecated in v2.0.0)

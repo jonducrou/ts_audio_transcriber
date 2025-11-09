@@ -8,7 +8,6 @@ import {
   EngineConfig
 } from '../types';
 import { VoskTranscriptionEngine } from '../engines/vosk/vosk-engine';
-import { WhisperTranscriptionEngine } from '../engines/whisper/whisper-engine';
 
 /**
  * SnippetPipeline handles real-time 15-second chunk processing
@@ -258,17 +257,13 @@ export class SnippetPipeline {
   /**
    * Create transcription engine instance
    */
-  private createEngine(engineType: 'vosk' | 'whisper'): TranscriptionEngine {
-    switch (engineType) {
-      case 'vosk':
-        return new VoskTranscriptionEngine();
-      case 'whisper':
-        return new WhisperTranscriptionEngine();
-      default:
-        throw new TranscriptionError(
-          TranscriptionErrorType.INVALID_CONFIGURATION,
-          `Unsupported engine type for snippets: ${engineType}`
-        );
+  private createEngine(engineType: 'vosk'): TranscriptionEngine {
+    if (engineType === 'vosk') {
+      return new VoskTranscriptionEngine();
     }
+    throw new TranscriptionError(
+      TranscriptionErrorType.INVALID_CONFIGURATION,
+      `Unsupported engine type for snippets: ${engineType}`
+    );
   }
 }

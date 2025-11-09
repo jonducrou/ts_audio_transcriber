@@ -10,11 +10,10 @@ import {
   EngineConfig
 } from '../types';
 import { VoskTranscriptionEngine } from '../engines/vosk/vosk-engine';
-import { WhisperTranscriptionEngine } from '../engines/whisper/whisper-engine';
 
 /**
  * SessionPipeline handles post-session complete transcription
- * Optimised for accuracy with Whisper engine processing from disk
+ * Optimised for accuracy with Vosk engine processing from disk
  */
 export class SessionPipeline {
   private _config: SessionTranscriptConfig;
@@ -215,17 +214,13 @@ export class SessionPipeline {
   /**
    * Create transcription engine instance
    */
-  private createEngine(engineType: 'vosk' | 'whisper'): TranscriptionEngine {
-    switch (engineType) {
-      case 'vosk':
-        return new VoskTranscriptionEngine();
-      case 'whisper':
-        return new WhisperTranscriptionEngine();
-      default:
-        throw new TranscriptionError(
-          TranscriptionErrorType.INVALID_CONFIGURATION,
-          `Unsupported engine type for session: ${engineType}`
-        );
+  private createEngine(engineType: 'vosk'): TranscriptionEngine {
+    if (engineType === 'vosk') {
+      return new VoskTranscriptionEngine();
     }
+    throw new TranscriptionError(
+      TranscriptionErrorType.INVALID_CONFIGURATION,
+      `Unsupported engine type for session: ${engineType}`
+    );
   }
 }

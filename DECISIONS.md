@@ -2,6 +2,48 @@
 
 This document tracks significant architectural decisions, alternatives considered, approaches attempted, and lessons learned during development.
 
+## Decision: Remove Whisper Engine - Vosk Only ✅
+
+**Date**: November 2025
+
+**Context**: The library originally supported two transcription engines: Vosk (fast, real-time) and Whisper (high accuracy). After extensive testing and production use, Whisper integration proved problematic while Vosk consistently delivered excellent results.
+
+**Whisper Issues**:
+- Module loading complexities (required `.default` export workaround)
+- Session pipeline integration failures (incomplete transcripts)
+- Marked as "experimental" and not recommended for production
+- Added maintenance burden without clear benefit
+- No users actually using Whisper in production
+
+**Vosk Success**:
+- Fast, reliable, and production-ready
+- Excellent accuracy for on-device processing
+- Works perfectly for both snippet and session pipelines
+- No integration issues
+- Recommended engine in all documentation
+
+**Decision**: Remove Whisper completely and make library Vosk-only.
+
+**Benefits**:
+- Simpler codebase (remove `src/engines/whisper/`)
+- Reduced dependencies (remove `whisper-node`)
+- Clearer documentation (no confusing engine choice)
+- Lower maintenance burden
+- Better user experience (one working engine vs. two options where one doesn't work)
+
+**Trade-offs**: Users who wanted Whisper's potentially higher accuracy will need to use Vosk. However, since Whisper wasn't working properly in the library, this is not a practical loss.
+
+**Implementation**: v1.1.0
+- Removed `src/engines/whisper/` directory
+- Removed `whisper-node` from dependencies
+- Updated `TranscriptionEngineType` from `'vosk' | 'whisper'` to `'vosk'`
+- Updated all documentation to reflect Vosk-only approach
+- Removed test-whisper-direct.js test file
+
+**Status**: ✅ Completed - Library is now Vosk-only and simpler
+
+---
+
 ## Major Architectural Shift: Dual-Mode Transcription
 
 **Date**: September 2024

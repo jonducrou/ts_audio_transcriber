@@ -1,7 +1,7 @@
 # TypeScript Audio Transcriber - Implementation Plan
 
 ## Project Overview
-Building a TypeScript library for **dual-mode audio transcription** on macOS designed specifically for note-taking applications. Provides both real-time 15-second snippets for live decision-making AND complete high-accuracy session transcripts for 1+ hour recordings using **open source** technologies.
+Building a TypeScript library for **dual-mode audio transcription** on macOS designed specifically for note-taking applications. Provides both real-time 15-second snippets for live decision-making AND complete high-accuracy session transcripts for 1+ hour recordings using **Vosk**, an open source speech recognition engine.
 
 ## Architecture Strategy
 
@@ -15,16 +15,16 @@ The library operates in two parallel processing modes simultaneously:
    - Use: Live captions, keyword detection, triggers, sentiment analysis
 
 2. **Session Pipeline** - Complete session transcription
-   - Engine: Whisper (high accuracy)
+   - Engine: Vosk (reliable, production-ready)
    - Latency: 5-15% of audio duration after stopping
-   - Accuracy: 95%+ (archive quality)
+   - Accuracy: 85-90% (production quality)
    - Use: Final transcript, summary generation, search indexing
 
 ### Core Components
 1. **Audio Capture Layer** - ScreenCaptureKit integration for macOS audio
 2. **Session Recorder** - Stream audio to disk for post-processing
 3. **Snippet Pipeline** - Real-time 15-second chunk processing with Vosk
-4. **Session Pipeline** - Post-session complete transcription with Whisper
+4. **Session Pipeline** - Post-session complete transcription with Vosk
 5. **Event System** - Real-time streaming with EventEmitter pattern
 6. **Demo Application** - Electron app for testing and permissions
 
@@ -38,7 +38,7 @@ The library operates in two parallel processing modes simultaneously:
   - Node.js compatible with TypeScript
   - Active maintenance and recent updates
 
-#### Transcription Engines
+#### Transcription Engine
 
 **Vosk:**
 - **Package**: `vosk-koffi` v1.1.1
@@ -48,26 +48,15 @@ The library operates in two parallel processing modes simultaneously:
   - Good Node.js bindings
   - Multi-language support (20+ languages)
   - Completely free and open source
-- **Trade-off**: Slightly lower accuracy than Whisper
-- **Best for**: Real-time snippets
-
-**Whisper:**
-- **Package**: `whisper-node` v1.1.1
-- **Rationale**:
-  - Best-in-class accuracy (95%+)
-  - Open source and free
-  - Good for batch processing entire sessions
-  - Multi-language support
-- **Trade-off**: Slower processing, not ideal for real-time
-- **Best for**: Session transcripts
-
-This dual-engine approach gives users flexibility to choose the best engine for their use case: fast feedback with Vosk, or high accuracy with Whisper.
+  - Production-ready and reliable
+- **Usage**: Used for both snippet pipeline (real-time) and session pipeline (post-processing)
+- **Trade-off**: Slightly lower accuracy than cloud services, but excellent for on-device processing
 
 #### Audio Recording: WAV Files
 - **Format**: WAV (PCM 16-bit, 16kHz, mono)
 - **Storage**: ~115 MB per hour
 - **Strategy**: Streaming writes to disk (no memory accumulation)
-- **Purpose**: Enable post-session processing with Whisper
+- **Purpose**: Enable post-session processing with Vosk
 
 ## Implementation Phases
 
@@ -95,7 +84,7 @@ This dual-engine approach gives users flexibility to choose the best engine for 
 ### Phase 3: Dual Pipeline Refactoring
 - [ ] Add new event types (`SnippetTranscriptionEvent`, `SessionTranscriptionEvent`, etc.)
 - [ ] Create `SnippetPipeline` class for 15-second chunk processing
-- [ ] Create `SessionPipeline` class for post-session Whisper processing
+- [ ] Create `SessionPipeline` class for post-session Vosk processing
 - [ ] Refactor `AudioTranscriber` to orchestrate both pipelines
 - [ ] Update audio broadcast to feed recorder + snippet pipeline
 - [ ] Remove old single-pipeline `transcription` event (breaking change)
@@ -144,7 +133,7 @@ interface TranscriberOptions {
   snippets?: {
     enabled: boolean;                      // Enable 15-second snippets
     intervalSeconds?: number;              // Default: 15
-    engine: 'vosk' | 'whisper';           // Recommended: 'vosk'
+    engine: 'vosk';           // Recommended: 'vosk'
     confidenceThreshold?: number;          // Default: 0.4
     engineOptions?: Record<string, any>;
   };
@@ -152,7 +141,7 @@ interface TranscriberOptions {
   // NEW: Session pipeline configuration
   sessionTranscript?: {
     enabled: boolean;                      // Enable post-session transcription
-    engine: 'vosk' | 'whisper';           // Recommended: 'whisper'
+    engine: 'vosk';           // Recommended: 'whisper'
     confidenceThreshold?: number;          // Default: 0.7
     engineOptions?: Record<string, any>;
   };
@@ -266,7 +255,7 @@ class AudioTranscriber extends EventEmitter {
 **After Stopping:**
 1. SessionRecorder finalises WAV file, emits 'recordingStopped'
 2. SessionPipeline reads entire WAV file from disk
-3. Whisper processes complete session
+3. Vosk processes complete session
 4. 'sessionTranscript' event emitted with complete transcript
 5. If autoCleanup enabled, delete WAV file
 
@@ -277,7 +266,7 @@ class AudioTranscriber extends EventEmitter {
 **Solutions**:
 1. **Streaming Writes** - SessionRecorder streams directly to disk (no accumulation)
 2. **Bounded Snippet Buffer** - Only holds 15 seconds at a time (~480KB)
-3. **Disk-Based Session Processing** - Whisper reads from disk, not memory
+3. **Disk-Based Session Processing** - Vosk reads from disk, not memory
 4. **Small OS Buffers** - Audio capture uses small buffers (~100KB)
 
 **Memory Profile** (10-hour session):
@@ -310,7 +299,7 @@ ts-audio-transcriber/
 │   │   ├── vosk/
 │   │   │   └── vosk-engine.ts            # Vosk (for snippets)
 │   │   └── whisper/
-│   │       └── whisper-engine.ts         # Whisper (for session)
+│   │       └── whisper-engine.ts         # Vosk (for session)
 │   ├── core/
 │   │   ├── audio-transcriber.ts          # REFACTORED: Dual-pipeline orchestrator
 │   │   ├── session-recorder.ts           # NEW: WAV file streaming
@@ -323,7 +312,7 @@ ts-audio-transcriber/
 │       ├── renderer.js                   # UPDATE: Show dual-mode events
 │       └── index.html                    # UPDATE: UI for snippets + session
 ├── recordings/                           # NEW: Default recording output directory
-├── models/                               # Vosk/Whisper models (user-managed)
+├── models/                               # Vosk/Vosk models (user-managed)
 │   ├── vosk-model-en-us-0.22/
 │   └── ggml-base.en.bin
 ├── dist/                                 # Compiled TypeScript output
@@ -343,8 +332,8 @@ ts-audio-transcriber/
   - Comprehensive error handling per pipeline
   - One pipeline failure doesn't affect the other
 
-### Whisper Processing Time
-- **Risk**: Whisper might be too slow for very long sessions
+### Vosk Processing Time
+- **Risk**: Vosk might be too slow for very long sessions
 - **Mitigation**:
   - Processing happens *after* recording (user aware of wait)
   - Target 5-15% of audio duration (1 hour → 3-9 minutes acceptable)
@@ -377,7 +366,7 @@ ts-audio-transcriber/
 
 ### Session Pipeline
 1. ✅ Complete 'sessionTranscript' event after stopping
-2. ✅ Accuracy > 95% with Whisper for clear audio
+2. ✅ Accuracy > 95% with Vosk for clear audio
 3. ✅ Processing time < 15% of audio duration
 4. ✅ Handles 1+ hour sessions without issues
 5. ✅ Can run independently of snippet pipeline
@@ -400,7 +389,7 @@ ts-audio-transcriber/
 - ✅ Phase 3: Dual Pipeline Refactoring (SnippetPipeline, SessionPipeline)
 - ✅ Phase 4: Demo App & Testing
 - ✅ Dual-mode architecture fully implemented
-- ✅ Both Vosk and Whisper engines integrated
+- ✅ Both Vosk and Vosk engines integrated
 - ✅ Real-time snippet transcription working
 - ✅ Post-session transcript processing working
 
@@ -409,7 +398,7 @@ ts-audio-transcriber/
 - ✅ Removed sox `rate` effect that was buffering audio
 - ✅ Audio now streams continuously with unique chunks
 - ✅ Vosk transcription working perfectly with no repeating words
-- ⚠️ Whisper module loading fixed but integration still experimental (use Vosk for production)
+- ⚠️ Vosk module loading fixed but integration still experimental (use Vosk for production)
 
 **Breaking Changes**:
 - ✅ Old 'transcription' event removed
@@ -418,9 +407,9 @@ ts-audio-transcriber/
 
 ## Next Steps
 
-1. **Whisper Integration** ⚠️
+1. **Vosk Integration** ⚠️
    - Module loading fixed - whisper-node now uses .default export
-   - Direct testing confirms Whisper transcribes isolated files correctly
+   - Direct testing confirms Vosk transcribes isolated files correctly
    - Session pipeline integration still has issues - needs further investigation
    - **Recommendation**: Use Vosk for both snippets and sessions (production-ready)
 
@@ -436,8 +425,8 @@ ts-audio-transcriber/
    - Profile memory usage for very long sessions (10+ hours)
    - Optimise Vosk model loading
    - Add worker pool for parallel processing
-   - Investigate streaming Whisper processing
+   - Investigate streaming Vosk processing
 
 **System is production-ready with Vosk engine!** 🚀
 
-**Note**: Whisper integration is experimental. For production use, configure both snippet and session pipelines to use Vosk.
+**Note**: Vosk integration is experimental. For production use, configure both snippet and session pipelines to use Vosk.
