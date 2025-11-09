@@ -18,7 +18,8 @@
     "demo": "npm run electron:dev",
     "pack:demo": "npm run build && electron-builder --dir",
     "dist:demo": "npm run build && electron-builder",
-    "test:audio": "node test-audio-capture.js"
+    "test:audio": "node test-audio-capture.js",
+    "test:rapid-stop-start": "npm run build && node test-rapid-stop-start.js"
   },
   "keywords": [
     "typescript",
