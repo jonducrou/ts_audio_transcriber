@@ -33,6 +33,7 @@ export class AudioTranscriber extends EventEmitter {
   private _sessionPipeline?: SessionPipeline;
   private _options: TranscriberOptions;
   private _isRunning = false;
+  private _isStopping = false;
   private _microphoneStream?: AudioStream;
   private _systemAudioStream?: AudioStream;
   private _metrics: PerformanceMetrics;
@@ -86,6 +87,23 @@ export class AudioTranscriber extends EventEmitter {
         TranscriptionErrorType.INVALID_CONFIGURATION,
         'AudioTranscriber is already running'
       );
+    }
+
+    // Wait for stop() to complete if in progress
+    if (this._isStopping) {
+      console.log('Waiting for previous stop() to complete...');
+      // Wait up to 5 seconds for stop to complete
+      const maxWaitTime = 5000;
+      const startWait = Date.now();
+      while (this._isStopping && Date.now() - startWait < maxWaitTime) {
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+      if (this._isStopping) {
+        throw new TranscriptionError(
+          TranscriptionErrorType.INVALID_CONFIGURATION,
+          'Previous stop() operation did not complete in time. Please try again.'
+        );
+      }
     }
 
     try {
@@ -197,95 +215,172 @@ export class AudioTranscriber extends EventEmitter {
 
   /**
    * Stop audio transcription and process final session transcript
+   * Ensures sessionTranscript is always emitted even if cleanup fails
    */
   async stop(): Promise<void> {
     if (!this._isRunning) {
       return;
     }
 
+    // Prevent concurrent stop() calls
+    if (this._isStopping) {
+      console.warn('Stop already in progress, waiting for completion...');
+      // Wait for current stop to complete
+      while (this._isStopping) {
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+      return;
+    }
+
+    this._isStopping = true;
+    const errors: Array<{ step: string; error: Error }> = [];
+
     try {
       console.log('Stopping AudioTranscriber...');
       this._isRunning = false;
 
-      // Stop metrics collection
-      if (this._metricsInterval) {
-        clearInterval(this._metricsInterval);
-        this._metricsInterval = undefined;
+      // Stop metrics collection (non-critical)
+      try {
+        if (this._metricsInterval) {
+          clearInterval(this._metricsInterval);
+          this._metricsInterval = undefined;
+        }
+        if (this._recordingProgressInterval) {
+          clearInterval(this._recordingProgressInterval);
+          this._recordingProgressInterval = undefined;
+        }
+      } catch (error) {
+        errors.push({ step: 'stop metrics intervals', error: error as Error });
+        console.warn('Non-critical error stopping metrics:', error);
       }
 
-      // Stop recording progress
-      if (this._recordingProgressInterval) {
-        clearInterval(this._recordingProgressInterval);
-        this._recordingProgressInterval = undefined;
-      }
+      // CRITICAL: Process session transcript FIRST before any cleanup
+      // This ensures the transcript is emitted even if cleanup fails
+      let recordingMetadata: RecordingMetadata | undefined;
+      if (this._sessionRecorder && this._sessionPipeline) {
+        try {
+          console.log('Stopping recording and processing final session transcript...');
+          recordingMetadata = await this._sessionRecorder.stop();
+          this.emit('recordingStopped', recordingMetadata);
 
-      // Stop audio streams
-      const stopPromises: Promise<void>[] = [];
-
-      if (this._microphoneStream) {
-        stopPromises.push(this._microphoneStream.stop());
-        this._microphoneStream = undefined;
-      }
-
-      if (this._systemAudioStream) {
-        stopPromises.push(this._systemAudioStream.stop());
-        this._systemAudioStream = undefined;
-      }
-
-      stopPromises.push(this._audioCapture.stopAllStreams());
-      await Promise.all(stopPromises);
-
-      // Stop snippet pipeline
-      if (this._snippetPipeline) {
-        await this._snippetPipeline.stop();
-      }
-
-      // Stop recording and process final session
-      if (this._sessionRecorder) {
-        const metadata = await this._sessionRecorder.stop();
-        this.emit('recordingStopped', metadata);
-
-        // Process final session transcript if session pipeline enabled
-        if (this._sessionPipeline) {
-          console.log('Processing final session transcript...');
+          // Process final session - this is critical for data integrity
           const source: AudioSource = this._options.enableMicrophone ? 'microphone' : 'system-audio';
-
           try {
-            await this._sessionPipeline.processFinalSession(metadata, source);
+            await this._sessionPipeline.processFinalSession(recordingMetadata, source);
+            console.log('✅ Session transcript processed and emitted successfully');
           } catch (error) {
-            console.error('Failed to process final session:', error);
+            errors.push({ step: 'process session transcript', error: error as Error });
+            console.error('Failed to process final session transcript:', error);
             this.emit('error', new TranscriptionError(
               TranscriptionErrorType.TRANSCRIPTION_ENGINE_ERROR,
               'Failed to process session transcript',
               error as Error
             ));
           }
-
-          // Handle cleanup
-          if (this._options.recording?.autoCleanup) {
-            console.log('Auto-cleanup enabled, deleting recording...');
-            await this._sessionRecorder.deleteRecording();
-          }
+        } catch (error) {
+          errors.push({ step: 'stop recording', error: error as Error });
+          console.error('Failed to stop recording:', error);
+          this.emit('error', new TranscriptionError(
+            TranscriptionErrorType.AUDIO_CAPTURE_FAILED,
+            'Failed to stop recording',
+            error as Error
+          ));
         }
       }
 
-      // Stop session pipeline
-      if (this._sessionPipeline) {
-        await this._sessionPipeline.stop();
+      // Stop audio streams (cleanup - errors are non-critical)
+      try {
+        const stopPromises: Promise<void>[] = [];
+
+        if (this._microphoneStream) {
+          stopPromises.push(
+            this._microphoneStream.stop().catch(err => {
+              errors.push({ step: 'stop microphone stream', error: err });
+              console.warn('Error stopping microphone stream:', err);
+            })
+          );
+          this._microphoneStream = undefined;
+        }
+
+        if (this._systemAudioStream) {
+          stopPromises.push(
+            this._systemAudioStream.stop().catch(err => {
+              errors.push({ step: 'stop system audio stream', error: err });
+              console.warn('Error stopping system audio stream:', err);
+            })
+          );
+          this._systemAudioStream = undefined;
+        }
+
+        stopPromises.push(
+          this._audioCapture.stopAllStreams().catch(err => {
+            errors.push({ step: 'stop all audio streams', error: err });
+            console.warn('Error stopping all audio streams:', err);
+          })
+        );
+
+        await Promise.all(stopPromises);
+      } catch (error) {
+        errors.push({ step: 'stop audio streams', error: error as Error });
+        console.warn('Error stopping audio streams:', error);
       }
 
+      // Stop snippet pipeline (cleanup - errors are non-critical)
+      if (this._snippetPipeline) {
+        try {
+          await this._snippetPipeline.stop();
+        } catch (error) {
+          errors.push({ step: 'stop snippet pipeline', error: error as Error });
+          console.warn('Error stopping snippet pipeline:', error);
+        }
+      }
+
+      // Stop session pipeline (cleanup - errors are non-critical)
+      if (this._sessionPipeline) {
+        try {
+          await this._sessionPipeline.stop();
+        } catch (error) {
+          errors.push({ step: 'stop session pipeline', error: error as Error });
+          console.warn('Error stopping session pipeline:', error);
+        }
+      }
+
+      // Auto-cleanup recording file (cleanup - errors are non-critical)
+      if (this._sessionRecorder && recordingMetadata && this._options.recording?.autoCleanup) {
+        try {
+          console.log('Auto-cleanup enabled, deleting recording...');
+          await this._sessionRecorder.deleteRecording();
+        } catch (error) {
+          errors.push({ step: 'delete recording file', error: error as Error });
+          console.warn('Error deleting recording file:', error);
+        }
+      }
+
+      // Always emit stopped event
       this.emit('stopped');
       console.log('AudioTranscriber stopped successfully');
 
+      // If there were non-critical errors, log summary but don't throw
+      if (errors.length > 0) {
+        console.warn(`Stop completed with ${errors.length} non-critical error(s):`);
+        errors.forEach(({ step, error }) => {
+          console.warn(`  - ${step}: ${error.message}`);
+        });
+      }
+
     } catch (error) {
+      // Critical error during stop - this should be rare
       const transcriptionError = new TranscriptionError(
         TranscriptionErrorType.TRANSCRIPTION_ENGINE_ERROR,
-        'Error stopping AudioTranscriber',
+        `Critical error stopping AudioTranscriber: ${(error as Error).message}`,
         error as Error
       );
       this._metrics.errorCount++;
       this.emit('error', transcriptionError);
       throw transcriptionError;
+    } finally {
+      // Always clear the stopping flag
+      this._isStopping = false;
     }
   }
 

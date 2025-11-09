@@ -2,6 +2,77 @@
 
 This document tracks significant architectural decisions, alternatives considered, approaches attempted, and lessons learned during development.
 
+## Bug Fix: Robust stop() with Guaranteed sessionTranscript Emission ✅
+
+**Date**: November 2025 (v1.1.1)
+
+**Context**: Production usage revealed three critical issues with the stop() method:
+1. sessionTranscript event not emitted when cleanup errors occurred
+2. Rapid stop/start sequences caused new recordings to not emit snippets
+3. Generic error messages made debugging difficult
+
+**Root Causes**:
+- Session transcript processing and cleanup were in same try/catch block
+- If cleanup (file deletion, pipeline shutdown) threw errors, transcript would never emit
+- No mechanism to prevent concurrent stop() calls or wait for completion
+- start() could be called while stop() was still cleaning up, causing state corruption
+- Generic "Error stopping AudioTranscriber" message provided no context
+
+**Solution Implemented**:
+1. **Guaranteed Transcript Emission**: Restructured stop() to process and emit sessionTranscript FIRST before any cleanup
+2. **Individual Error Handling**: Wrapped each cleanup step in separate try/catch blocks
+3. **Non-Critical Error Classification**: Cleanup errors (stream shutdown, file deletion) are logged but don't prevent completion
+4. **Stopping Flag**: Added `_isStopping` flag to prevent concurrent stop() calls
+5. **Start Waits for Stop**: start() now waits up to 5 seconds for pending stop() to complete
+6. **Detailed Error Messages**: Each error now includes specific step context (e.g., "Failed to stop microphone stream")
+
+**Code Changes** (src/core/audio-transcriber.ts):
+```typescript
+private _isStopping = false;
+
+async stop(): Promise<void> {
+  // Prevent concurrent calls
+  if (this._isStopping) {
+    while (this._isStopping) await delay(100);
+    return;
+  }
+
+  this._isStopping = true;
+  const errors: Array<{step: string; error: Error}> = [];
+
+  try {
+    // CRITICAL: Process transcript FIRST
+    if (this._sessionRecorder && this._sessionPipeline) {
+      try {
+        const metadata = await this._sessionRecorder.stop();
+        await this._sessionPipeline.processFinalSession(metadata, source);
+      } catch (error) {
+        errors.push({step: 'process session transcript', error});
+        // Still continue with cleanup
+      }
+    }
+
+    // All cleanup wrapped in individual try/catch
+    // Errors logged but don't prevent 'stopped' event
+
+    this.emit('stopped'); // Always emitted
+
+  } finally {
+    this._isStopping = false; // Always cleared
+  }
+}
+```
+
+**Benefits**:
+- **Data Integrity**: Session transcripts are NEVER lost, even if cleanup fails
+- **Reliable Stop/Start**: Rapid stop/start sequences work without delays
+- **Better Debugging**: Specific error messages help diagnose issues
+- **Graceful Degradation**: Cleanup errors don't prevent successful stop
+
+**Status**: ✅ Completed and tested in v1.1.1
+
+---
+
 ## Decision: Remove Whisper Engine - Vosk Only ✅
 
 **Date**: November 2025

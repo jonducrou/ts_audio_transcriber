@@ -1,6 +1,6 @@
 {
   "name": "ts-audio-transcriber",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "TypeScript library for real-time audio transcription on macOS with microphone and system audio support using Vosk open source speech recognition",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
