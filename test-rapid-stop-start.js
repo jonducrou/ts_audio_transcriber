@@ -17,8 +17,8 @@ const path = require('path');
 
 // Test configuration
 const VOSK_MODEL_PATH = path.join(__dirname, 'models', 'vosk-model-en-us-0.22-lgraph');
-const RECORDING_DURATION_MS = 5000; // 5 seconds per session
-const TEST_TIMEOUT_MS = 30000; // 30 seconds total timeout
+const RECORDING_DURATION_MS = 8000; // 8 seconds per session (enough for 1 snippet at 5s interval)
+const TEST_TIMEOUT_MS = 40000; // 40 seconds total timeout
 
 // Test state tracking
 const testResults = {
@@ -53,6 +53,7 @@ async function runTest() {
     snippets: {
       enabled: true,
       engine: 'vosk',
+      interval: 5000, // 5 second snippets for faster testing
       engineOptions: {
         modelPath: VOSK_MODEL_PATH
       }
@@ -134,7 +135,7 @@ async function runTest() {
 
     currentSession = 1;
     await transcriber.start();
-    console.log('Speak into your microphone for 5 seconds...\n');
+    console.log('Speak into your microphone for 8 seconds...\n');
 
     // Wait for at least one snippet
     const session1SnippetPromise = new Promise((resolve) => {
@@ -171,7 +172,7 @@ async function runTest() {
 
     currentSession = 2;
     await transcriber.start(); // Should work without manual delay!
-    console.log('Speak into your microphone for 5 seconds...\n');
+    console.log('Speak into your microphone for 8 seconds...\n');
 
     // Wait for at least one snippet in session 2
     const session2SnippetPromise = new Promise((resolve) => {
