@@ -310,8 +310,8 @@ export class VoskTranscriptionEngine extends BaseTranscriptionEngine {
         }
       }
 
-      // Create new recognizer instance to clear state
-      this.recognizer = new Recognizer({ model: this.model, sampleRate: this.sampleRate });
+      // Use built-in reset method to clear state
+      this.recognizer.reset();
       this.recognizer.setWords(true);
 
       // Reset state
@@ -476,8 +476,8 @@ export class VoskTranscriptionEngine extends BaseTranscriptionEngine {
    */
   public async reset(): Promise<void> {
     if (this.recognizer && this.model) {
-      // Create a new recognizer to reset state
-      this.recognizer = new Recognizer({ model: this.model, sampleRate: this.sampleRate });
+      // Use built-in reset method to clear state
+      this.recognizer.reset();
       this.lastPartialText = '';
       this.lastFinalText = '';
       this.partialResultCount = 0;
