@@ -440,46 +440,67 @@ recording: {
 
 ### 2. Audio Capture Technology
 
-**Decision**: Use **ScreenCaptureKit** via the `screencapturekit` npm package for both microphone and system audio capture.
+**Decision**: Use **sox** for microphone capture and **macos-system-audio-recorder** for system audio capture.
 
-**Date**: September 2024
+**Date**:
+- September 2024 (initial decision)
+- November 2025 (v1.2.0 - completed system audio implementation)
 
 **Context**:
 - Need to capture both microphone input and system audio output
 - macOS-specific solution acceptable
 - Must support modern macOS versions (13+)
+- Real-time streaming required (raw PCM audio for transcription)
 
-**Alternatives Considered**:
+**Final Implementation**:
 
-1. **node-record-lpcm16** ⚠️
-   - **Pros**: Simple, reliable microphone recording
-   - **Cons**: No system audio support, limited to microphone only
-   - **Outcome**: Included as fallback for microphone-only scenarios
+1. **Microphone Capture: sox** ✅
+   - **Why**: Simple, reliable, outputs raw PCM to stdout
+   - **Status**: Implemented in v1.0.0, works perfectly
+   - **Technical**: Uses `sox -d -t raw` for continuous raw PCM streaming
+
+2. **System Audio Capture: macos-system-audio-recorder** ✅
+   - **Why**: Only package that provides raw PCM streaming for system audio
+   - **Status**: Implemented in v1.2.0
+   - **Advantages**:
+     - Outputs raw PCM audio streams (perfect for real-time transcription)
+     - Simple API: `recorder.start()` → `recorder.getStream()`
+     - Low latency, minimal overhead
+     - macOS 13.0+ support
+   - **Trade-offs**:
+     - Requires Screen Recording permission (macOS limitation)
+     - macOS-specific (acceptable for this library)
+
+**Alternatives Considered for System Audio**:
+
+1. **screencapturekit** ❌
+   - **Why Rejected**: Records to files (MOV/MP3), not raw PCM streams
+   - Adds significant latency (must wait for file to be written)
+   - Not suitable for real-time transcription use case
+   - **Status**: Kept as optional dependency for potential future features
 
 2. **portaudio / node-portaudio** ❌
    - **Why Rejected**: Complex C++ bindings, harder to maintain
    - No built-in system audio capture on macOS
    - Would need additional tools like BlackHole or Loopback
 
-3. **Web Audio API** ❌
-   - **Why Rejected**: Browser-only, not suitable for Node.js library
-   - Would limit use cases to Electron or web apps
+3. **BlackHole + sox** ❌
+   - **Why Rejected**: Requires manual user installation of BlackHole driver
+   - Complex setup (user must route audio through virtual device)
+   - Poor user experience for library consumers
 
-4. **ScreenCaptureKit** ✅ **SELECTED**
-   - **Advantages**:
-     - Native macOS framework for audio/screen capture
-     - Supports both microphone (macOS 15+) and system audio
-     - Official Apple API, well-documented
-     - Good npm wrapper (`screencapturekit` package)
-     - Low-level access to audio streams
-   - **Trade-offs**:
-     - macOS 13+ required (13.0 for system audio, 15.0 for microphone)
-     - Platform-specific (no cross-platform)
-     - Requires Screen Recording permission for system audio
+**Rationale**:
+- **Microphone**: sox provides raw PCM streaming with minimal setup
+- **System Audio**: macos-system-audio-recorder is the ONLY package that provides raw PCM streaming for system audio on macOS
+- Both solutions output raw PCM to stdout, creating a consistent architecture
 
-**Rationale**: ScreenCaptureKit is the only solution that provides both microphone and system audio capture on macOS through a single, official API.
+**Technical Architecture**:
+```
+Microphone: sox → raw PCM → ChildProcess stdout → AudioStream → Transcription
+System Audio: macos-system-audio-recorder → raw PCM → ChildProcess-like wrapper → AudioStream → Transcription
+```
 
-**Status**: ✅ Implemented successfully
+**Status**: ✅ Fully implemented and tested in v1.2.0
 
 ---
 

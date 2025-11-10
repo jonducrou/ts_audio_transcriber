@@ -1,4 +1,5 @@
 import { spawn, ChildProcess } from 'child_process';
+import { EventEmitter, PassThrough } from 'stream';
 import { AudioCapture, AudioDevice, AudioStream, AudioStreamConfig, TranscriptionError, TranscriptionErrorType } from '../types';
 import { ScreenCaptureAudioStream } from './stream';
 
@@ -22,6 +23,23 @@ async function getScreenCaptureKit(): Promise<any> {
   return screencapturekitModule;
 }
 
+// Lazy-load macos-system-audio-recorder only when needed
+// This allows microphone-only usage without requiring system audio recorder
+let systemAudioRecorderModule: any = null;
+
+async function getSystemAudioRecorder(): Promise<any> {
+  if (!systemAudioRecorderModule) {
+    try {
+      systemAudioRecorderModule = require('macos-system-audio-recorder');
+      console.log('[AudioCapture] macos-system-audio-recorder loaded successfully');
+    } catch (error) {
+      console.warn('[AudioCapture] Failed to load macos-system-audio-recorder:', error);
+      throw new Error('macos-system-audio-recorder is not available. System audio capture requires macos-system-audio-recorder package.');
+    }
+  }
+  return systemAudioRecorderModule;
+}
+
 /**
  * ScreenCaptureKit-based audio capture implementation for macOS
  */
@@ -30,6 +48,7 @@ export class MacAudioCapture implements AudioCapture {
   private _activeStreams: Map<string, ScreenCaptureAudioStream> = new Map();
   private _isInitialized = false;
   private _screenCaptureKitLoaded = false;
+  private _systemAudioRecorderLoaded = false;
 
   constructor() {
     // Initialize any required state
@@ -221,15 +240,15 @@ export class MacAudioCapture implements AudioCapture {
         await this.initialize();
       }
 
-      // Lazy-load ScreenCaptureKit for system audio (required)
-      if (!this._screenCaptureKitLoaded) {
+      // Lazy-load macos-system-audio-recorder for system audio (required)
+      if (!this._systemAudioRecorderLoaded) {
         try {
-          await getScreenCaptureKit();
-          this._screenCaptureKitLoaded = true;
+          await getSystemAudioRecorder();
+          this._systemAudioRecorderLoaded = true;
         } catch (error) {
           throw new TranscriptionError(
             TranscriptionErrorType.AUDIO_CAPTURE_FAILED,
-            'System audio capture requires ScreenCaptureKit which is not available',
+            'System audio capture requires macos-system-audio-recorder which is not available',
             error as Error
           );
         }
@@ -265,7 +284,7 @@ export class MacAudioCapture implements AudioCapture {
         ...config
       };
 
-      // Start recording system audio using ScreenCaptureKit
+      // Start recording system audio using macos-system-audio-recorder
       const captureOptions = {
         audioOnly: true,
         captureSystemAudio: true,
@@ -399,34 +418,118 @@ export class MacAudioCapture implements AudioCapture {
           }, 100);
 
         } else {
-          // For system audio, fall back to previous implementation
-          console.log(`Starting system audio capture for ${source} (using previous implementation)`);
+          // System audio capture using macos-system-audio-recorder
+          console.log(`Starting real system audio capture for ${source}`);
 
-          const process = spawn('node', ['-e', `
-            // Generate system audio simulation
-            setInterval(() => {
-              const buffer = Buffer.alloc(1024);
-              // Fill with different pattern for system audio
-              for (let i = 0; i < buffer.length; i += 2) {
-                const sample = Math.sin(2 * Math.PI * 220 * (i / 2) / 16000) * 16383;
-                buffer.writeInt16LE(sample, i);
+          getSystemAudioRecorder().then((SystemAudioRecorderModule) => {
+            try {
+              const { SystemAudioRecorder } = SystemAudioRecorderModule;
+              const sysAudioRecorder = new SystemAudioRecorder();
+
+              console.log('Initializing system audio recorder...');
+              try {
+                sysAudioRecorder.start();
+              } catch (startError: any) {
+                // Handle permission errors with clear messages
+                const errorMessage = startError?.message || String(startError);
+
+                if (errorMessage.includes('permission') || errorMessage.includes('denied') || errorMessage.includes('authorized')) {
+                  const permissionError = new Error(
+                    'Screen Recording permission is required for system audio capture.\n' +
+                    'Please grant permission:\n' +
+                    '1. Open System Settings > Privacy & Security > Screen Recording\n' +
+                    '2. Enable permission for Terminal (or your app)\n' +
+                    '3. Restart your application and try again'
+                  );
+                  reject(permissionError);
+                  return;
+                } else if (errorMessage.includes('audio') || errorMessage.includes('device')) {
+                  const deviceError = new Error(
+                    `System audio device error: ${errorMessage}\n` +
+                    'Please ensure:\n' +
+                    '- Audio output is enabled on your system\n' +
+                    '- No other application is exclusively using the audio device'
+                  );
+                  reject(deviceError);
+                  return;
+                } else {
+                  reject(new Error(`Failed to start system audio recorder: ${errorMessage}`));
+                  return;
+                }
               }
-              process.stdout.write(buffer);
-            }, 64);
-          `], {
-            stdio: ['pipe', 'pipe', 'pipe']
-          });
 
-          process.on('error', reject);
+              // Get audio format details
+              sysAudioRecorder.getAudioDetails().then((audioDetails: any) => {
+                console.log('System audio format:', audioDetails);
+                console.log(`  Sample rate: ${audioDetails.sampleRate} Hz`);
+                console.log(`  Channels: ${audioDetails.channels}`);
+                console.log(`  Bits per channel: ${audioDetails.bitsPerChannel}`);
+              }).catch((err: Error) => {
+                console.warn('Could not retrieve audio details:', err.message);
+              });
 
-          setTimeout(() => {
-            if (!process.killed) {
-              console.log(`Started system audio process for ${source} (PID: ${process.pid})`);
-              resolve(process);
-            } else {
-              reject(new Error('Process failed to start'));
+              // Get the PCM audio stream
+              const audioStream = sysAudioRecorder.getStream();
+
+              // Create a ChildProcess-compatible wrapper
+              // This allows seamless integration with existing ScreenCaptureAudioStream
+              const pseudoProcess = new EventEmitter() as any;
+              pseudoProcess.stdout = audioStream;
+              pseudoProcess.stderr = new PassThrough();
+              pseudoProcess.stdin = new PassThrough();
+              pseudoProcess.pid = Date.now();
+              pseudoProcess.killed = false;
+              pseudoProcess.exitCode = null;
+
+              // Implement kill method
+              pseudoProcess.kill = (signal?: string) => {
+                if (!pseudoProcess.killed) {
+                  console.log(`Stopping system audio recorder (signal: ${signal || 'SIGTERM'})`);
+                  try {
+                    sysAudioRecorder.stop();
+                    pseudoProcess.killed = true;
+                    pseudoProcess.exitCode = 0;
+                    pseudoProcess.emit('exit', 0, signal || 'SIGTERM');
+                  } catch (error) {
+                    console.error('Error stopping system audio recorder:', error);
+                  }
+                }
+                return true;
+              };
+
+              // Handle stream errors
+              audioStream.on('error', (error: Error) => {
+                console.error('System audio stream error:', error);
+                pseudoProcess.emit('error', error);
+              });
+
+              audioStream.on('end', () => {
+                console.log('System audio stream ended');
+                if (!pseudoProcess.killed) {
+                  pseudoProcess.killed = true;
+                  pseudoProcess.exitCode = 0;
+                  pseudoProcess.emit('exit', 0, null);
+                }
+              });
+
+              // Wait a moment for the recorder to initialize
+              setTimeout(() => {
+                if (!pseudoProcess.killed) {
+                  console.log(`System audio capture started for ${source} (PID: ${pseudoProcess.pid})`);
+                  resolve(pseudoProcess as ChildProcess);
+                } else {
+                  reject(new Error('System audio recorder failed to start'));
+                }
+              }, 100);
+
+            } catch (error) {
+              console.error('Error initializing system audio recorder:', error);
+              reject(error);
             }
-          }, 100);
+          }).catch((error: Error) => {
+            console.error('Failed to load system audio recorder module:', error);
+            reject(new Error(`System audio capture requires macos-system-audio-recorder package: ${error.message}`));
+          });
         }
 
       } catch (error) {

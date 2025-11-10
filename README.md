@@ -338,15 +338,24 @@ await transcriber.start();
 
 ## 📋 Requirements
 
-- **macOS 13.0+** (for ScreenCaptureKit support)
+- **macOS 13.0+** (required for system audio capture)
 - **Node.js 16+**
 - **Vosk Model** - Download from [alphacephei.com/vosk/models](https://alphacephei.com/vosk/models)
 
+### Optional Dependencies
+
+- **System Audio Capture**: Requires `macos-system-audio-recorder` package (automatically installed)
+  - Enables capturing audio output from your Mac (music, videos, calls, etc.)
+  - Provides raw PCM audio streams for real-time transcription
+  - Works on macOS 13.0+
+
 ### System Permissions
 
-The library requires the following macOS permissions:
-- **Microphone Access** - For microphone transcription
-- **Screen Recording** - For system audio capture via ScreenCaptureKit
+The library requires the following macOS permissions depending on which audio sources you enable:
+- **Microphone Access** - Required for microphone transcription (System Settings > Privacy & Security > Microphone)
+- **Screen Recording** - Required for system audio capture (System Settings > Privacy & Security > Screen Recording)
+  - Note: Despite the name, this permission is needed for system audio capture on macOS
+  - The library does NOT capture your screen - only audio
 
 ## 🎮 Example Usage
 
@@ -553,8 +562,14 @@ ts-audio-transcriber/
 ### Common Issues
 
 **"Permission denied" errors**
-- Ensure microphone and screen recording permissions are granted
-- Check System Preferences > Security & Privacy > Privacy
+- **Microphone**: System Settings > Privacy & Security > Microphone > Enable for Terminal/your app
+- **System Audio**: System Settings > Privacy & Security > Screen Recording > Enable for Terminal/your app
+- Restart your application after granting permissions
+
+**"System audio capture requires macos-system-audio-recorder" error**
+- The package should be automatically installed with `npm install`
+- If missing, manually install: `npm install macos-system-audio-recorder`
+- Verify you're on macOS 13.0+ (system audio requires modern macOS)
 
 **"Model not found" errors**
 - Download a Vosk model from [alphacephei.com/vosk/models](https://alphacephei.com/vosk/models)
@@ -562,16 +577,23 @@ ts-audio-transcriber/
 - Verify the model path in your configuration
 
 **No transcription output**
-- Check audio levels in System Preferences
+- Check audio levels in System Settings > Sound
 - Verify correct audio device selection
 - Ensure confidence threshold isn't too high
 - Test with a smaller, faster model first
+- **System Audio**: Make sure audio is actually playing on your system
+
+**System audio not capturing anything**
+- Verify Screen Recording permission is granted (required for system audio)
+- Check that audio is playing (play music, video, etc.)
+- Test with `npm run test:system-audio` to verify system audio works
+- Some DRM-protected content may not be captured
 
 **High CPU usage**
 - Use a smaller Vosk model
 - Increase buffer size
 - Disable partial results
-- Use single audio source
+- Use single audio source (microphone OR system audio)
 
 ### Debug Mode
 

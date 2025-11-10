@@ -1,6 +1,6 @@
 {
   "name": "ts-audio-transcriber",
-  "version": "1.1.1",
+  "version": "1.2.0",
   "description": "TypeScript library for real-time audio transcription on macOS with microphone and system audio support using Vosk open source speech recognition",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -19,7 +19,8 @@
     "pack:demo": "npm run build && electron-builder --dir",
     "dist:demo": "npm run build && electron-builder",
     "test:audio": "node test-audio-capture.js",
-    "test:rapid-stop-start": "npm run build && node test-rapid-stop-start.js"
+    "test:rapid-stop-start": "npm run build && node test-rapid-stop-start.js",
+    "test:system-audio": "npm run build && node test-system-audio.js"
   },
   "keywords": [
     "typescript",
@@ -44,6 +45,7 @@
     "typescript": "^5.0.0"
   },
   "dependencies": {
+    "macos-system-audio-recorder": "^0.0.1",
     "node-record-lpcm16": "^1.0.1",
     "vosk-koffi": "^1.1.1"
   },
