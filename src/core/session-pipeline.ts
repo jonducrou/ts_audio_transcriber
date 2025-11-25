@@ -19,6 +19,9 @@ export class SessionPipeline {
   private _config: SessionTranscriptConfig;
   private _engine: TranscriptionEngine | null = null;
   private _isRunning: boolean = false;
+  private _isStopping: boolean = false;
+  private _stopPromise?: Promise<void>;
+  private _stopResolve?: () => void;
   private _emitCallback: (event: SessionTranscriptionEvent) => void;
 
   constructor(
@@ -61,21 +64,39 @@ export class SessionPipeline {
 
   /**
    * Stop the session pipeline
+   * Returns existing stop promise if already stopping (prevents race conditions)
    */
   async stop(): Promise<void> {
     if (!this._isRunning) {
       return;
     }
 
-    this._isRunning = false;
-
-    // Cleanup engine
-    if (this._engine) {
-      await this._engine.destroy();
-      this._engine = null;
+    // Handle concurrent stop calls - return existing promise
+    if (this._isStopping) {
+      return this._stopPromise;
     }
 
-    console.log('SessionPipeline: Stopped');
+    this._isStopping = true;
+    this._stopPromise = new Promise<void>(resolve => {
+      this._stopResolve = resolve;
+    });
+
+    try {
+      this._isRunning = false;
+
+      // Cleanup engine
+      if (this._engine) {
+        await this._engine.destroy();
+        this._engine = null;
+      }
+
+      console.log('SessionPipeline: Stopped');
+    } finally {
+      this._isStopping = false;
+      this._stopResolve?.();
+      this._stopPromise = undefined;
+      this._stopResolve = undefined;
+    }
   }
 
   /**
@@ -85,10 +106,11 @@ export class SessionPipeline {
     recordingMetadata: RecordingMetadata,
     source: AudioSource = 'microphone'
   ): Promise<void> {
-    if (!this._isRunning || !this._engine) {
+    // Check both flags to prevent processing during shutdown
+    if (!this._isRunning || this._isStopping || !this._engine) {
       throw new TranscriptionError(
         TranscriptionErrorType.INVALID_CONFIGURATION,
-        'Session pipeline is not running'
+        'Session pipeline is not running or is stopping'
       );
     }
 

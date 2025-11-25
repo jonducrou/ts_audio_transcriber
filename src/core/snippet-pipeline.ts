@@ -20,6 +20,9 @@ export class SnippetPipeline {
   private _bufferStartTime: number = 0;
   private _snippetIndex: number = 0;
   private _isRunning: boolean = false;
+  private _isStopping: boolean = false;
+  private _stopPromise?: Promise<void>;
+  private _stopResolve?: () => void;
   private _processingQueue: Array<{ data: Buffer; source: AudioSource; timestamp: number }> = [];
   private _isProcessing: boolean = false;
   private _maxQueueSize: number = 3;
@@ -72,31 +75,50 @@ export class SnippetPipeline {
 
   /**
    * Stop the snippet pipeline
+   * Returns existing stop promise if already stopping (prevents race conditions)
    */
   async stop(): Promise<void> {
     if (!this._isRunning) {
       return;
     }
 
-    this._isRunning = false;
-
-    // Wait for queue to finish
-    await this.flushQueue();
-
-    // Cleanup engine
-    if (this._engine) {
-      await this._engine.destroy();
-      this._engine = null;
+    // Handle concurrent stop calls - return existing promise
+    if (this._isStopping) {
+      return this._stopPromise;
     }
 
-    console.log(`SnippetPipeline: Stopped (processed ${this._snippetIndex} snippets)`);
+    this._isStopping = true;
+    this._stopPromise = new Promise<void>(resolve => {
+      this._stopResolve = resolve;
+    });
+
+    try {
+      this._isRunning = false;
+
+      // Wait for queue to finish
+      await this.flushQueue();
+
+      // Cleanup engine
+      if (this._engine) {
+        await this._engine.destroy();
+        this._engine = null;
+      }
+
+      console.log(`SnippetPipeline: Stopped (processed ${this._snippetIndex} snippets)`);
+    } finally {
+      this._isStopping = false;
+      this._stopResolve?.();
+      this._stopPromise = undefined;
+      this._stopResolve = undefined;
+    }
   }
 
   /**
    * Process incoming audio data
    */
   async processAudio(audioData: Buffer, source: AudioSource, timestamp: number): Promise<void> {
-    if (!this._isRunning || !this._engine) {
+    // Check both flags to prevent processing during shutdown
+    if (!this._isRunning || this._isStopping || !this._engine) {
       return;
     }
 
@@ -166,7 +188,8 @@ export class SnippetPipeline {
     this._isProcessing = true;
 
     try {
-      while (this._processingQueue.length > 0 && this._isRunning) {
+      // Check both flags to prevent processing during shutdown
+      while (this._processingQueue.length > 0 && this._isRunning && !this._isStopping) {
         const item = this._processingQueue.shift();
         if (!item) break;
 

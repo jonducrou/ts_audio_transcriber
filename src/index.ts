@@ -26,6 +26,22 @@ export type {
   TranscriptionEngineType,
   EngineConfig,
 
+  // Durability types
+  ReconnectionConfig,
+  DeviceConnectionState,
+  DisconnectReason,
+  DeviceDisconnectedEvent,
+  ReconnectionAttemptEvent,
+  ReconnectionFailedEvent,
+  ReconnectionSuccessEvent,
+  RecordingRotationResult,
+
+  // Recording types
+  RecordingMetadata,
+  RecordingProgress,
+  SnippetTranscriptionEvent,
+  SessionTranscriptionEvent,
+
   // Advanced types
   ModelInfo,
   TranscriptionPlugin,

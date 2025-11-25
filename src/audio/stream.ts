@@ -1,6 +1,16 @@
 import { EventEmitter } from 'events';
 import { ChildProcess } from 'child_process';
-import { AudioStream, AudioSource, AudioStreamConfig } from '../types';
+import { AudioStream, AudioSource, AudioStreamConfig, DisconnectReason, DeviceConnectionState } from '../types';
+
+/**
+ * Context passed with the 'end' event for enhanced error handling
+ */
+export interface StreamEndContext {
+  reason: DisconnectReason;
+  code: number | null;
+  signal: string | null;
+  error?: Error;
+}
 
 /**
  * Implementation of AudioStream for captured audio data from ScreenCaptureKit
@@ -10,6 +20,8 @@ export class ScreenCaptureAudioStream extends EventEmitter implements AudioStrea
   private _source: AudioSource;
   private _config: AudioStreamConfig;
   private _captureProcess?: ChildProcess;
+  private _lastError?: Error;
+  private _connectionState: DeviceConnectionState = 'connected';
 
   constructor(source: AudioSource, config: AudioStreamConfig, captureProcess?: ChildProcess) {
     super();
@@ -27,6 +39,43 @@ export class ScreenCaptureAudioStream extends EventEmitter implements AudioStrea
     if (this._captureProcess) {
       this.setupProcessHandlers();
     }
+  }
+
+  /**
+   * Classify the reason for process exit to help consuming code decide next steps
+   */
+  private classifyExitReason(
+    code: number | null,
+    signal: string | null,
+    error?: Error
+  ): DisconnectReason {
+    // Normal termination via signal
+    if (signal === 'SIGTERM' || signal === 'SIGINT') {
+      return 'process_exit';
+    }
+
+    // Clean exit
+    if (code === 0) {
+      return 'process_exit';
+    }
+
+    // Check error message for clues
+    if (error) {
+      const msg = error.message.toLowerCase();
+      if (msg.includes('permission') || msg.includes('denied') || msg.includes('not authorized')) {
+        return 'permission_revoked';
+      }
+      if (msg.includes('not found') || msg.includes('enoent') || msg.includes('no such device')) {
+        return 'device_removed';
+      }
+    }
+
+    // Non-zero exit code indicates error
+    if (code !== null && code !== 0) {
+      return 'error';
+    }
+
+    return 'unknown';
   }
 
   private setupProcessHandlers(): void {
@@ -48,6 +97,7 @@ export class ScreenCaptureAudioStream extends EventEmitter implements AudioStrea
       // Filter out normal status messages from ScreenCaptureKit
       if (message.includes('ERROR') || message.includes('FATAL')) {
         const error = new Error(`Audio capture error: ${message}`);
+        this._lastError = error;
         this.emit('error', error);
       } else {
         // Log other messages as debug info
@@ -55,22 +105,35 @@ export class ScreenCaptureAudioStream extends EventEmitter implements AudioStrea
       }
     });
 
-    // Handle process exit
+    // Handle process exit with enhanced context
     this._captureProcess.on('exit', (code: number | null, signal: string | null) => {
       this._isActive = false;
+      this._connectionState = 'disconnected';
+
+      const reason = this.classifyExitReason(code, signal, this._lastError);
 
       if (code !== 0 && code !== null) {
         const error = new Error(`Audio capture process exited with code ${code}`);
+        this._lastError = error;
         this.emit('error', error);
       } else if (signal) {
         console.log(`Audio capture process terminated with signal: ${signal}`);
       }
 
-      this.emit('end');
+      // Emit enhanced end event with context for consuming code
+      const endContext: StreamEndContext = {
+        reason,
+        code,
+        signal,
+        error: this._lastError
+      };
+      this.emit('end', endContext);
     });
 
     this._captureProcess.on('error', (error: Error) => {
       this._isActive = false;
+      this._lastError = error;
+      this._connectionState = 'disconnected';
       this.emit('error', error);
     });
   }
@@ -85,6 +148,8 @@ export class ScreenCaptureAudioStream extends EventEmitter implements AudioStrea
     }
 
     this._isActive = true;
+    this._connectionState = 'connected';
+    this._lastError = undefined;
     console.log(`Started ${this._source} audio stream`);
   }
 
@@ -146,8 +211,22 @@ export class ScreenCaptureAudioStream extends EventEmitter implements AudioStrea
     this.on('error', callback);
   }
 
-  onEnd(callback: () => void): void {
+  onEnd(callback: (context?: StreamEndContext) => void): void {
     this.on('end', callback);
+  }
+
+  /**
+   * Get the current connection state
+   */
+  getConnectionState(): DeviceConnectionState {
+    return this._connectionState;
+  }
+
+  /**
+   * Get the last error that occurred
+   */
+  getLastError(): Error | undefined {
+    return this._lastError;
   }
 
   /**

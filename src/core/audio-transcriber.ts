@@ -12,12 +12,19 @@ import {
   PerformanceMetrics,
   AudioCapture,
   AudioStream,
-  AudioSource
+  AudioSource,
+  DeviceDisconnectedEvent,
+  ReconnectionAttemptEvent,
+  ReconnectionFailedEvent,
+  ReconnectionSuccessEvent,
+  RecordingRotationResult
 } from '../types';
 import { MacAudioCapture } from '../audio/capture';
+import { StreamEndContext } from '../audio/stream';
 import { SessionRecorder } from './session-recorder';
 import { SnippetPipeline } from './snippet-pipeline';
 import { SessionPipeline } from './session-pipeline';
+import { ReconnectionManager } from './reconnection-manager';
 
 /**
  * Main AudioTranscriber class - orchestrates dual-mode transcription (v2.0.0)
@@ -34,11 +41,15 @@ export class AudioTranscriber extends EventEmitter {
   private _options: TranscriberOptions;
   private _isRunning = false;
   private _isStopping = false;
+  private _stopPromise?: Promise<void>;
+  private _stopResolve?: () => void;
   private _microphoneStream?: AudioStream;
   private _systemAudioStream?: AudioStream;
   private _metrics: PerformanceMetrics;
   private _metricsInterval?: NodeJS.Timeout;
   private _recordingProgressInterval?: NodeJS.Timeout;
+  private _microphoneReconnectManager: ReconnectionManager;
+  private _systemAudioReconnectManager: ReconnectionManager;
 
   constructor(options: TranscriberOptions = {}) {
     super();
@@ -76,6 +87,10 @@ export class AudioTranscriber extends EventEmitter {
     };
 
     this.setupErrorHandling();
+
+    // Initialize reconnection managers with user config or defaults
+    this._microphoneReconnectManager = new ReconnectionManager(options.reconnection);
+    this._systemAudioReconnectManager = new ReconnectionManager(options.reconnection);
   }
 
   /**
@@ -89,16 +104,18 @@ export class AudioTranscriber extends EventEmitter {
       );
     }
 
-    // Wait for stop() to complete if in progress
-    if (this._isStopping) {
+    // Wait for stop() to complete if in progress (Promise-based coordination)
+    if (this._isStopping && this._stopPromise) {
       console.log('Waiting for previous stop() to complete...');
-      // Wait up to 5 seconds for stop to complete
-      const maxWaitTime = 5000;
-      const startWait = Date.now();
-      while (this._isStopping && Date.now() - startWait < maxWaitTime) {
-        await new Promise(resolve => setTimeout(resolve, 100));
-      }
-      if (this._isStopping) {
+      try {
+        // Wait for stop promise with timeout
+        await Promise.race([
+          this._stopPromise,
+          new Promise<void>((_, reject) =>
+            setTimeout(() => reject(new Error('Stop timeout')), 5000)
+          )
+        ]);
+      } catch (error) {
         throw new TranscriptionError(
           TranscriptionErrorType.INVALID_CONFIGURATION,
           'Previous stop() operation did not complete in time. Please try again.'
@@ -222,17 +239,16 @@ export class AudioTranscriber extends EventEmitter {
       return;
     }
 
-    // Prevent concurrent stop() calls
+    // Handle concurrent stop() calls - return existing promise
     if (this._isStopping) {
       console.warn('Stop already in progress, waiting for completion...');
-      // Wait for current stop to complete
-      while (this._isStopping) {
-        await new Promise(resolve => setTimeout(resolve, 100));
-      }
-      return;
+      return this._stopPromise;
     }
 
     this._isStopping = true;
+    this._stopPromise = new Promise<void>(resolve => {
+      this._stopResolve = resolve;
+    });
     const errors: Array<{ step: string; error: Error }> = [];
 
     try {
@@ -379,8 +395,11 @@ export class AudioTranscriber extends EventEmitter {
       this.emit('error', transcriptionError);
       throw transcriptionError;
     } finally {
-      // Always clear the stopping flag
+      // Always clear the stopping flag and resolve the promise
       this._isStopping = false;
+      this._stopResolve?.();
+      this._stopPromise = undefined;
+      this._stopResolve = undefined;
     }
   }
 
@@ -449,6 +468,110 @@ export class AudioTranscriber extends EventEmitter {
       return this._sessionRecorder.getMetadata().audioFilePath;
     } catch {
       return undefined;
+    }
+  }
+
+  /**
+   * Rotate the current recording without stopping transcription
+   * - Finalises current WAV file
+   * - Emits sessionTranscript for completed segment
+   * - Starts new recording with new session ID
+   * - Snippet pipeline continues uninterrupted
+   *
+   * @param newOutputDir Optional new output directory for the new recording
+   * @returns Rotation result with previous and new session info
+   */
+  async rotateRecording(newOutputDir?: string): Promise<RecordingRotationResult> {
+    if (!this._isRunning) {
+      throw new TranscriptionError(
+        TranscriptionErrorType.INVALID_CONFIGURATION,
+        'AudioTranscriber is not running'
+      );
+    }
+
+    if (!this._sessionRecorder?.isRecording()) {
+      throw new TranscriptionError(
+        TranscriptionErrorType.INVALID_CONFIGURATION,
+        'Recording is not active'
+      );
+    }
+
+    // Stop progress reporting during rotation
+    if (this._recordingProgressInterval) {
+      clearInterval(this._recordingProgressInterval);
+      this._recordingProgressInterval = undefined;
+    }
+
+    try {
+      console.log('Rotating recording...');
+
+      // 1. Stop current recording and get metadata
+      const previousMetadata = await this._sessionRecorder.stop();
+      this.emit('recordingStopped', previousMetadata);
+
+      // 2. Process session transcript for completed segment (if session pipeline is active)
+      if (this._sessionPipeline?.isRunning()) {
+        const source: AudioSource = this._options.enableMicrophone ? 'microphone' : 'system-audio';
+        try {
+          await this._sessionPipeline.processFinalSession(previousMetadata, source);
+          console.log('Session transcript processed for rotated segment');
+        } catch (error) {
+          console.error('Error processing session transcript during rotation:', error);
+          this.emit('error', new TranscriptionError(
+            TranscriptionErrorType.TRANSCRIPTION_ENGINE_ERROR,
+            'Failed to process session transcript during rotation',
+            error as Error
+          ));
+        }
+      }
+
+      // 3. Create new session recorder with new/same output directory
+      const recordingConfig = newOutputDir
+        ? { ...this._options.recording!, outputDir: newOutputDir }
+        : this._options.recording!;
+
+      this._sessionRecorder = new SessionRecorder(
+        recordingConfig,
+        this._options.audioConfig!
+      );
+
+      // 4. Start new recording
+      const newMetadata = await this._sessionRecorder.start();
+      this.emit('recordingStarted', newMetadata);
+
+      // 5. Restart progress reporting
+      this._recordingProgressInterval = setInterval(() => {
+        if (this._sessionRecorder?.isRecording()) {
+          this.emit('recordingProgress', this._sessionRecorder.getProgress());
+        }
+      }, 5000);
+
+      // 6. Create and return rotation result
+      const result: RecordingRotationResult = {
+        previousSessionId: previousMetadata.sessionId,
+        newSessionId: newMetadata.sessionId,
+        completedFilePath: previousMetadata.audioFilePath,
+        timestamp: Date.now()
+      };
+
+      this.emit('recordingRotated', result);
+      console.log(`Recording rotated: ${previousMetadata.sessionId} -> ${newMetadata.sessionId}`);
+
+      return result;
+
+    } catch (error) {
+      // Re-enable progress reporting even on error
+      this._recordingProgressInterval = setInterval(() => {
+        if (this._sessionRecorder?.isRecording()) {
+          this.emit('recordingProgress', this._sessionRecorder.getProgress());
+        }
+      }, 5000);
+
+      throw new TranscriptionError(
+        TranscriptionErrorType.AUDIO_CAPTURE_FAILED,
+        'Failed to rotate recording',
+        error as Error
+      );
     }
   }
 
@@ -629,25 +752,132 @@ export class AudioTranscriber extends EventEmitter {
       this.emit('error', transcriptionError);
     });
 
-    stream.onEnd(() => {
+    stream.onEnd((endContext?: StreamEndContext) => {
       console.log(`${source} stream ended - received ${chunkCount} chunks, ${totalBytes} total bytes`);
-      if (this._isRunning) {
-        // Try to restart the stream
-        setTimeout(() => {
-          if (this._isRunning) {
-            if (source === 'microphone') {
-              this.startMicrophoneCapture().catch(err => {
-                console.error('Failed to restart microphone capture:', err);
-              });
-            } else {
-              this.startSystemAudioCapture().catch(err => {
-                console.error('Failed to restart system audio capture:', err);
-              });
-            }
-          }
-        }, 1000);
+
+      // Don't attempt reconnection if we're stopping
+      if (!this._isRunning || this._isStopping) {
+        return;
+      }
+
+      const reason = endContext?.reason || 'unknown';
+      const reconnectManager = source === 'microphone'
+        ? this._microphoneReconnectManager
+        : this._systemAudioReconnectManager;
+
+      // Emit device disconnected event with full context
+      const disconnectEvent: DeviceDisconnectedEvent = {
+        source,
+        reason,
+        error: endContext?.error,
+        timestamp: Date.now(),
+        willAttemptReconnect: reconnectManager.canRetry(),
+        sessionId: this._sessionRecorder?.getSessionId() ?? undefined,
+        durationAtDisconnect: this._sessionRecorder?.getProgress().duration
+      };
+      this.emit('deviceDisconnected', disconnectEvent);
+
+      // Attempt reconnection if configured and not exhausted
+      if (reconnectManager.canRetry()) {
+        this.attemptReconnection(source, reconnectManager, endContext?.error);
+      } else {
+        this.emitReconnectionFailed(source, reconnectManager, endContext?.error);
       }
     });
+  }
+
+  /**
+   * Attempt to reconnect a disconnected audio source with exponential backoff
+   */
+  private async attemptReconnection(
+    source: AudioSource,
+    manager: ReconnectionManager,
+    lastError?: Error
+  ): Promise<void> {
+    const { attemptNumber, delay } = manager.startAttempt();
+
+    // Emit reconnection attempt event
+    const attemptEvent: ReconnectionAttemptEvent = {
+      source,
+      attemptNumber,
+      maxAttempts: manager.getConfig().maxAttempts,
+      delayMs: delay,
+      timestamp: Date.now()
+    };
+    this.emit('reconnectionAttempt', attemptEvent);
+
+    console.log(`Reconnection attempt ${attemptNumber}/${manager.getConfig().maxAttempts} for ${source} in ${delay}ms`);
+
+    // Wait for exponential backoff delay
+    await new Promise(resolve => setTimeout(resolve, delay));
+
+    // Check if we should still be running
+    if (!this._isRunning || this._isStopping) {
+      manager.reset();
+      return;
+    }
+
+    try {
+      if (source === 'microphone') {
+        await this.startMicrophoneCapture();
+      } else {
+        await this.startSystemAudioCapture();
+      }
+
+      // Success!
+      const successResult = manager.onSuccess();
+      const successEvent: ReconnectionSuccessEvent = {
+        source,
+        attemptsRequired: successResult.attemptsRequired,
+        reconnectionTimeMs: successResult.reconnectionTimeMs,
+        timestamp: Date.now()
+      };
+      this.emit('reconnectionSuccess', successEvent);
+      console.log(`Successfully reconnected ${source} after ${successResult.attemptsRequired} attempt(s)`);
+
+    } catch (error) {
+      console.error(`Reconnection attempt ${attemptNumber} failed for ${source}:`, error);
+
+      if (manager.canRetry()) {
+        // Schedule next attempt
+        this.attemptReconnection(source, manager, error as Error);
+      } else {
+        this.emitReconnectionFailed(source, manager, error as Error);
+      }
+    }
+  }
+
+  /**
+   * Emit reconnection failed event when all attempts are exhausted
+   */
+  private emitReconnectionFailed(
+    source: AudioSource,
+    manager: ReconnectionManager,
+    lastError?: Error
+  ): void {
+    const { totalAttempts, elapsedMs } = manager.onFinalFailure();
+
+    // Determine recommendation based on error type
+    let recommendation: 'manual_restart' | 'check_device' | 'check_permissions' = 'manual_restart';
+    if (lastError?.message?.toLowerCase().includes('permission')) {
+      recommendation = 'check_permissions';
+    } else if (lastError?.message?.toLowerCase().includes('not found')) {
+      recommendation = 'check_device';
+    }
+
+    const failedEvent: ReconnectionFailedEvent = {
+      source,
+      totalAttempts,
+      elapsedMs,
+      lastError,
+      timestamp: Date.now(),
+      recommendation
+    };
+    this.emit('reconnectionFailed', failedEvent);
+    console.error(`Reconnection failed for ${source} after ${totalAttempts} attempts (${elapsedMs}ms). Recommendation: ${recommendation}`);
+
+    // Reset manager for potential future reconnection attempts
+    manager.reset();
   }
 
   /**

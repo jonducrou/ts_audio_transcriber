@@ -8,6 +8,16 @@
 export type AudioSource = 'microphone' | 'system-audio';
 
 /**
+ * Device connection state for resilience tracking
+ */
+export type DeviceConnectionState = 'connected' | 'disconnected' | 'reconnecting' | 'failed';
+
+/**
+ * Reason for device disconnection
+ */
+export type DisconnectReason = 'process_exit' | 'error' | 'device_removed' | 'permission_revoked' | 'unknown';
+
+/**
  * Available transcription engines
  */
 export type TranscriptionEngineType = 'vosk';
@@ -150,6 +160,109 @@ export interface RecordingProgress {
 }
 
 /**
+ * Device disconnect event payload - provides context for consuming software to decide next steps
+ */
+export interface DeviceDisconnectedEvent {
+  /** Source type that disconnected */
+  source: AudioSource;
+
+  /** Reason for disconnection */
+  reason: DisconnectReason;
+
+  /** Original error if available */
+  error?: Error;
+
+  /** Timestamp of disconnection */
+  timestamp: number;
+
+  /** Whether automatic reconnection will be attempted */
+  willAttemptReconnect: boolean;
+
+  /** Current session ID (for consumer context) */
+  sessionId?: string;
+
+  /** Recording duration at disconnect in milliseconds (for consumer context) */
+  durationAtDisconnect?: number;
+}
+
+/**
+ * Reconnection attempt event payload
+ */
+export interface ReconnectionAttemptEvent {
+  /** Source type being reconnected */
+  source: AudioSource;
+
+  /** Current attempt number (1-based) */
+  attemptNumber: number;
+
+  /** Maximum attempts configured */
+  maxAttempts: number;
+
+  /** Delay before this attempt in milliseconds */
+  delayMs: number;
+
+  /** Timestamp of attempt */
+  timestamp: number;
+}
+
+/**
+ * Reconnection failed event payload - all attempts exhausted
+ */
+export interface ReconnectionFailedEvent {
+  /** Source type that failed to reconnect */
+  source: AudioSource;
+
+  /** Total attempts made */
+  totalAttempts: number;
+
+  /** Time elapsed since first disconnect in milliseconds */
+  elapsedMs: number;
+
+  /** Last error encountered */
+  lastError?: Error;
+
+  /** Timestamp of final failure */
+  timestamp: number;
+
+  /** Recommendation for consuming software */
+  recommendation: 'manual_restart' | 'check_device' | 'check_permissions';
+}
+
+/**
+ * Reconnection successful event payload
+ */
+export interface ReconnectionSuccessEvent {
+  /** Source type that reconnected */
+  source: AudioSource;
+
+  /** Number of attempts it took */
+  attemptsRequired: number;
+
+  /** Total time to reconnect in milliseconds */
+  reconnectionTimeMs: number;
+
+  /** Timestamp of successful reconnection */
+  timestamp: number;
+}
+
+/**
+ * Recording rotation result - returned by rotateRecording()
+ */
+export interface RecordingRotationResult {
+  /** Previous session ID */
+  previousSessionId: string;
+
+  /** New session ID */
+  newSessionId: string;
+
+  /** Path to the completed WAV file */
+  completedFilePath: string;
+
+  /** Timestamp of rotation */
+  timestamp: number;
+}
+
+/**
  * Audio device information
  */
 export interface AudioDevice {
@@ -267,6 +380,26 @@ export interface RecordingConfig {
 }
 
 /**
+ * Reconnection configuration for device resilience
+ */
+export interface ReconnectionConfig {
+  /** Enable automatic reconnection attempts (default: true) */
+  enabled: boolean;
+
+  /** Maximum number of reconnection attempts before giving up (default: 5) */
+  maxAttempts: number;
+
+  /** Base delay in milliseconds for exponential backoff (default: 1000) */
+  baseDelayMs: number;
+
+  /** Maximum delay in milliseconds (default: 30000) */
+  maxDelayMs: number;
+
+  /** Multiplier for exponential backoff (default: 2) */
+  backoffMultiplier: number;
+}
+
+/**
  * Configuration options for the AudioTranscriber (v2.0.0)
  */
 export interface TranscriberOptions {
@@ -290,6 +423,9 @@ export interface TranscriberOptions {
 
   /** Recording configuration */
   recording?: RecordingConfig;
+
+  /** Reconnection configuration for device resilience */
+  reconnection?: ReconnectionConfig;
 
   /** @deprecated Use snippets.enabled instead */
   enablePartialResults?: boolean;
@@ -546,10 +682,25 @@ export interface AudioTranscriberEvents {
   /** Emitted periodically with performance metrics */
   metrics: (metrics: PerformanceMetrics) => void;
 
+  /** Emitted when audio device disconnects */
+  deviceDisconnected: (event: DeviceDisconnectedEvent) => void;
+
+  /** Emitted when reconnection attempt starts */
+  reconnectionAttempt: (event: ReconnectionAttemptEvent) => void;
+
+  /** Emitted when all reconnection attempts have failed */
+  reconnectionFailed: (event: ReconnectionFailedEvent) => void;
+
+  /** Emitted when reconnection succeeds */
+  reconnectionSuccess: (event: ReconnectionSuccessEvent) => void;
+
+  /** Emitted when recording is rotated to new location */
+  recordingRotated: (result: RecordingRotationResult) => void;
+
   /** @deprecated Removed in v2.0.0 - use snippet or sessionTranscript instead */
   transcription?: (event: TranscriptionEvent) => void;
 
-  /** @deprecated Not implemented in v2.0.0 */
+  /** @deprecated Use deviceDisconnected event instead */
   deviceChange?: (devices: AudioDevice[]) => void;
 
   /** @deprecated Not implemented in v2.0.0 */
